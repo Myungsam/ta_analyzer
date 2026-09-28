@@ -1,0 +1,21 @@
+# Measurement data and test data folders (not published)
+Data/
+test/*/
+*.opju
+
+# Build outputs and release binaries
+build/
+dist/
+release/
+*.exe
+
+# Runtime output
+residuals/
+
+# Python
+__pycache__/
+*.pyc
+
+# Tooling state
+.omc/
+.claude/
