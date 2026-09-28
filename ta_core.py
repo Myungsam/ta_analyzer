@@ -772,6 +772,100 @@ def interpolate_missing_2d(A: np.ndarray, w: np.ndarray, t: np.ndarray,
     return out
 
 
+RESAMPLE_MODES = ('average', 'decimate')
+
+
+def resample_wavelength(wl: np.ndarray, A: np.ndarray, dx: float,
+                        mode: str = 'average', origin: float | None = None,
+                        force: bool = False):
+    """Reduce the wavelength axis (axis 0) onto uniform bins of width ``dx``.
+
+    Bins are ``[origin + k*dx, origin + (k+1)*dx)``; a point lying exactly
+    on a boundary belongs to the upper bin.  ``origin`` defaults to
+    ``wl[0]``.  Bins that contain no original point are simply absent from
+    the output, so the result keeps only measured spectral regions.
+
+    ``mode='average'``  : λ and ΔA are averaged over each bin (ΔA with
+                          nanmean; an all-NaN bin stays NaN).
+    ``mode='decimate'`` : each bin keeps the original row closest to the
+                          bin centre (ties → lower index); λ and ΔA are
+                          taken unchanged from that row.
+
+    When ``dx`` is not larger than the mean original spacing
+    ``(wl[-1] - wl[0]) / (n - 1)`` (or fewer than 2 points are given) the
+    call is a no-op unless ``force`` is set: copies of the inputs are
+    returned with ``info['applied'] = False``.
+
+    Returns
+    -------
+    wl_new : (M',) ndarray
+    A_new  : (M', ...) ndarray  (same trailing shape as ``A``)
+    info   : dict with ``applied, mode, dx, origin, mean_spacing, n_in,
+             n_out`` plus ``starts`` (average) or ``idx`` (decimate) — the
+             grouping, reusable on another matrix via
+             :func:`apply_bin_groups`.
+    """
+    wl = np.asarray(wl, dtype=float).ravel()
+    A = np.asarray(A, dtype=float)
+    n = wl.size
+    if A.shape[0] != n:
+        raise ValueError(f'Shape mismatch: A {A.shape}, wl {wl.shape}')
+    if n > 1 and np.any(np.diff(wl) <= 0):
+        raise ValueError('wavelength axis must be strictly ascending')
+    mode = str(mode).lower()
+    if mode not in RESAMPLE_MODES:
+        raise ValueError(f'mode must be one of {RESAMPLE_MODES}, got {mode!r}')
+    dx = float(dx)
+    if not np.isfinite(dx) or dx <= 0:
+        raise ValueError(f'dx must be positive, got {dx}')
+
+    mean_spacing = float((wl[-1] - wl[0]) / (n - 1)) if n > 1 else float('nan')
+    origin = float(wl[0]) if origin is None else float(origin)
+    info = {'applied': False, 'mode': mode, 'dx': dx, 'origin': origin,
+            'mean_spacing': mean_spacing, 'n_in': n, 'n_out': n}
+    if not force and (n < 2 or dx <= mean_spacing):
+        return wl.copy(), A.copy(), info
+
+    k = np.floor((wl - origin) / dx + 1e-9).astype(np.int64)
+    starts = np.r_[0, np.flatnonzero(np.diff(k)) + 1]
+    info.update(applied=True, n_out=int(starts.size))
+    if mode == 'average':
+        info['starts'] = starts
+        wl_new = np.add.reduceat(wl, starts) / np.diff(np.r_[starts, n])
+    else:
+        centres = origin + (k[starts] + 0.5) * dx
+        ends = np.r_[starts[1:], n]
+        idx = np.array([s + int(np.argmin(np.abs(wl[s:e] - c)))
+                        for s, e, c in zip(starts, ends, centres)],
+                       dtype=np.int64)
+        info['idx'] = idx
+        wl_new = wl[idx]
+    return wl_new, apply_bin_groups(A, info), info
+
+
+def apply_bin_groups(A: np.ndarray, info: dict) -> np.ndarray:
+    """Apply the bin grouping of a :func:`resample_wavelength` result to
+    another matrix ``A`` defined on the same (pre-resample) wavelength
+    grid — e.g. a solvent reference aligned to the sample grid.
+
+    Average groups use nanmean (all-NaN group → NaN, no RuntimeWarning);
+    decimate groups pick the same rows.  A no-op ``info`` returns a copy.
+    """
+    A = np.asarray(A, dtype=float)
+    if not info.get('applied'):
+        return A.copy()
+    if info['mode'] == 'decimate':
+        return A[info['idx']].copy()
+    starts = info['starts']
+    finite = np.isfinite(A)
+    sums = np.add.reduceat(np.where(finite, A, 0.0), starts, axis=0)
+    counts = np.add.reduceat(finite.astype(np.int64), starts, axis=0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = sums / counts
+    out[counts == 0] = np.nan
+    return out
+
+
 def fit_chirp_params(pts: np.ndarray):
     """Multi-start Nelder-Mead fit of chirp_model to (w, t) points.
 

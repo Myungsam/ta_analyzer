@@ -16,6 +16,11 @@ from ta_widgets import (
 import ta_core
 
 
+def _bounds_close(a: float, b: float) -> bool:
+    """Equal within the 6-decimal rounding of the range spinboxes."""
+    return abs(a - b) <= 1e-6 * max(1.0, abs(b))
+
+
 # =====================================================================
 # Background Correction window
 # =====================================================================
@@ -115,10 +120,7 @@ class CropDialog(QtWidgets.QDialog):
         self.t_min_full = float(np.min(app.original_delay))
         self.t_max_full = float(np.max(app.original_delay))
 
-        wl_min0 = float(np.min(app.wavelength))
-        wl_max0 = float(np.max(app.wavelength))
-        t_min0 = float(np.min(app.delay))
-        t_max0 = float(np.max(app.delay))
+        wl_min0, wl_max0, t_min0, t_max0 = self._current_bounds()
 
         # ===== Pin / selection state =====
         # Drops are pinned spectra to delete+interpolate.  Stored as
@@ -177,6 +179,36 @@ class CropDialog(QtWidgets.QDialog):
         self.btn_full_t = QtWidgets.QPushButton('Full t range')
         ctrl.addWidget(self.btn_full_t, 1, 4)
         outer.addLayout(ctrl)
+
+        # ---- Wavelength resampling (applied after the crop) ----
+        gb_rs = QtWidgets.QGroupBox(u'Wavelength resampling')
+        rs_row = QtWidgets.QHBoxLayout(gb_rs)
+        self.cb_resample = QtWidgets.QCheckBox(u'Resample λ')
+        self.cb_resample.setChecked(bool(app.resample_enabled))
+        rs_row.addWidget(self.cb_resample)
+        rs_row.addWidget(make_label(u'Δλ (nm):', 'right'))
+        self.ed_resample_dx = make_double_edit(
+            float(app.resample_dx), minv=0.001, maxv=1000.0, decimals=3)
+        rs_row.addWidget(self.ed_resample_dx)
+        self.rb_avg = QtWidgets.QRadioButton('Average')
+        self.rb_dec = QtWidgets.QRadioButton('Decimate')
+        (self.rb_dec if app.resample_mode == 'decimate'
+         else self.rb_avg).setChecked(True)
+        rs_row.addWidget(self.rb_avg)
+        rs_row.addWidget(self.rb_dec)
+        self.lbl_resample_info = QtWidgets.QLabel('')
+        rs_row.addWidget(self.lbl_resample_info, stretch=1)
+        rs_hint = QtWidgets.QLabel(
+            'Bins of width Δλ start at the cropped λ_min.  Average: mean of '
+            'the points in each bin.  Decimate: keep the point closest to '
+            'each bin centre.  Like a crop, applying resets BG / chirp / '
+            'masks.')
+        rs_hint.setWordWrap(True)
+        rs_hint.setStyleSheet('font-style: italic; color: #4d4d4d;')
+        rs_col = QtWidgets.QVBoxLayout()
+        rs_col.addWidget(gb_rs)
+        rs_col.addWidget(rs_hint)
+        outer.addLayout(rs_col)
 
         # ---- Preview split: 2D map | (Spectrum + Kinetics) ----
         preview_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -328,7 +360,7 @@ class CropDialog(QtWidgets.QDialog):
         br = QtWidgets.QHBoxLayout()
         br.addStretch(1)
         self.btn_revert = QtWidgets.QPushButton('Revert to Original')
-        self.btn_revert.setEnabled(app.is_cropped())
+        self.btn_revert.setEnabled(app.is_modified())
         self.btn_cancel = QtWidgets.QPushButton('Cancel')
         self.btn_apply = QtWidgets.QPushButton('Apply')
         style_button(self.btn_apply, bg='#4fa35a', fg='white')
@@ -352,6 +384,20 @@ class CropDialog(QtWidgets.QDialog):
                    self.ed_t_min, self.ed_t_max):
             ed.valueChanged.connect(
                 lambda _: self._refresh_timer.start())
+
+        # Resample settings (and the λ range they apply to) refresh the
+        # point-count label and the spectrum overlay on their own timer,
+        # so the cheap overlay path above stays untouched.
+        self._resample_timer = QtCore.QTimer(self)
+        self._resample_timer.setSingleShot(True)
+        self._resample_timer.setInterval(150)
+        self._resample_timer.timeout.connect(self._on_resample_changed)
+        for ed in (self.ed_wl_min, self.ed_wl_max, self.ed_resample_dx):
+            ed.valueChanged.connect(
+                lambda _: self._resample_timer.start())
+        for w in (self.cb_resample, self.rb_avg):
+            w.toggled.connect(lambda _: self._resample_timer.start())
+
         self.btn_full_wl.clicked.connect(self._set_full_wl)
         self.btn_full_t.clicked.connect(self._set_full_t)
         self.btn_revert.clicked.connect(self._revert)
@@ -382,8 +428,92 @@ class CropDialog(QtWidgets.QDialog):
         # ---- Initial draws ----
         self._draw_heatmap_full()
         self._update_overlays()
+        self._update_resample_info()
         self._draw_spectrum()
         self._draw_kinetics()
+
+    def _current_bounds(self):
+        """(wl_min, wl_max, t_min, t_max) of the active crop request.
+
+        Uses the stored request when there is one, so re-opening the
+        dialog after resampling does not drift to the binned grid edges;
+        otherwise the edges of the pre-resample working grid."""
+        app = self.app
+        if app.crop_bounds is not None:
+            return tuple(float(v) for v in app.crop_bounds)
+        wl = (app._crop_wl_pre_resample if app.resample_enabled
+              else app.wavelength)
+        return (float(np.min(wl)), float(np.max(wl)),
+                float(np.min(app.delay)), float(np.max(app.delay)))
+
+    # ------------------------------------------------------------------
+    # Wavelength resampling
+    # ------------------------------------------------------------------
+    def _resample_spec(self) -> dict:
+        return {'enabled': self.cb_resample.isChecked(),
+                'dx': float(self.ed_resample_dx.value()),
+                'mode': 'average' if self.rb_avg.isChecked() else 'decimate'}
+
+    def _snap_bounds(self, wl1, wl2, t1, t2):
+        """Spinbox values are rounded to 6 decimals, so a bound meant to
+        equal the current request or a full-range edge is snapped back to
+        that exact value — otherwise the rounding can cut off the
+        outermost original point."""
+        full = (self.wl_min_full, self.wl_max_full,
+                self.t_min_full, self.t_max_full)
+        out = []
+        for new, old, edge in zip((wl1, wl2, t1, t2),
+                                  self._current_bounds(), full):
+            out.append(old if _bounds_close(new, old)
+                       else edge if _bounds_close(new, edge) else new)
+        return tuple(out)
+
+    def _resample_window(self):
+        """Original λ values inside the λ range currently typed in."""
+        wl1, wl2 = sorted((self.ed_wl_min.value(), self.ed_wl_max.value()))
+        wl1, wl2, _, _ = self._snap_bounds(wl1, wl2, self.t_min_full,
+                                           self.t_max_full)
+        wl = self.app.original_wavelength
+        return (wl >= wl1) & (wl <= wl2)
+
+    def _resample_probe(self):
+        """Run the kernel on the in-range λ axis only (no data) to get the
+        output size and whether Δλ is usable."""
+        spec = self._resample_spec()
+        wl = self.app.original_wavelength[self._resample_window()]
+        if wl.size == 0:
+            return None
+        _, _, info = ta_core.resample_wavelength(
+            wl, np.zeros((wl.size, 0)), spec['dx'], spec['mode'])
+        return info
+
+    def _resample_valid(self) -> bool:
+        info = self._resample_probe()
+        return bool(info and info['applied'])
+
+    def _update_resample_info(self):
+        spec = self._resample_spec()
+        for w in (self.ed_resample_dx, self.rb_avg, self.rb_dec):
+            w.setEnabled(spec['enabled'])
+        info = self._resample_probe()
+        if not spec['enabled'] or info is None:
+            self.lbl_resample_info.setText('')
+            return
+        if not info['applied']:
+            self.lbl_resample_info.setStyleSheet('color: #c0392b;')
+            self.lbl_resample_info.setText(
+                f"Δλ ≤ mean spacing {info['mean_spacing']:.3f} nm — "
+                'Apply will crop without resampling')
+            return
+        self.lbl_resample_info.setStyleSheet('color: #333;')
+        mode = 'avg' if spec['mode'] == 'average' else 'decimate'
+        self.lbl_resample_info.setText(
+            f"{info['n_in']} → {info['n_out']} λ points "
+            f"(Δλ={spec['dx']:g} nm, {mode})")
+
+    def _on_resample_changed(self):
+        self._update_resample_info()
+        self._draw_spectrum()
 
     def _set_full_wl(self):
         # Block valueChanged so we don't fire the debounce timer twice
@@ -395,6 +525,7 @@ class CropDialog(QtWidgets.QDialog):
         for ed in (self.ed_wl_min, self.ed_wl_max):
             ed.blockSignals(False)
         self._update_overlays()
+        self._resample_timer.start()
 
     def _set_full_t(self):
         for ed in (self.ed_t_min, self.ed_t_max):
@@ -419,29 +550,44 @@ class CropDialog(QtWidgets.QDialog):
         if t1 > t2:
             t1, t2 = t2, t1
 
+        # An unusable Δλ (not larger than the mean λ spacing) falls back to
+        # a plain crop, after telling the user.
+        spec = self._resample_spec()
+        if spec['enabled'] and not self._resample_valid():
+            warn_box(self, 'Resampling skipped',
+                     u'Δλ must be larger than the mean wavelength spacing '
+                     u'of the selected range.  The crop is applied without '
+                     u'resampling.')
+            spec = dict(spec, enabled=False)
+        resample = spec if spec['enabled'] else None
+
         # Only re-crop when the range actually changed — otherwise running
         # apply_crop_by_range on identical bounds would needlessly reset
-        # bg/chirp/solvent state.  We compare against the *current*
-        # (post-existing-crop) axis bounds.
-        cur_wl = self.app.wavelength
-        cur_t = self.app.delay
-        eps_wl = 1e-9 * max(1.0, abs(float(cur_wl[-1])))
-        eps_t = 1e-9 * max(1.0, abs(float(cur_t[-1])))
-        crop_changed = (
-            abs(float(cur_wl[0]) - wl1) > eps_wl
-            or abs(float(cur_wl[-1]) - wl2) > eps_wl
-            or abs(float(cur_t[0]) - t1) > eps_t
-            or abs(float(cur_t[-1]) - t2) > eps_t
-        )
+        # bg/chirp/solvent state.  We compare against the active crop
+        # request (not the resampled grid edges); the tolerance absorbs
+        # the spinboxes' 6-decimal rounding.
+        wl1, wl2, t1, t2 = self._snap_bounds(wl1, wl2, t1, t2)
+        crop_changed = any(
+            not _bounds_close(new, old)
+            for new, old in zip((wl1, wl2, t1, t2), self._current_bounds()))
+        app = self.app
+        resample_changed = (
+            spec['enabled'] != bool(app.resample_enabled)
+            or (spec['enabled']
+                and (abs(spec['dx'] - app.resample_dx) > 1e-9
+                     or spec['mode'] != app.resample_mode)))
+        rebuild = crop_changed or resample_changed
 
         method = self.dd_interp_method.currentText()
         has_drops = bool(self._drop_t_values or self._kin_overlay_wl)
 
         # Order of operations follows the live preview: interpolate the
-        # full original first, then crop the processed result.  When the
-        # crop range is unchanged we keep bg/chirp/etc and just patch
-        # the current matrix in-place via interpolate_*_at.
-        if has_drops and crop_changed:
+        # full original first, then crop (and resample) the processed
+        # result.  When nothing about the grid changes we keep bg/chirp/etc
+        # and just patch the current matrix in-place via interpolate_*_at
+        # — only possible on an un-resampled grid, so with resampling on
+        # the drops go through the rebuild path as well.
+        if has_drops and (rebuild or spec['enabled']):
             t_full = self.app.original_delay
             w_full = self.app.original_wavelength
             drop_t_full = sorted({
@@ -482,12 +628,14 @@ class CropDialog(QtWidgets.QDialog):
             saved = self.app.original_deltaA
             self.app.original_deltaA = A_interp
             try:
-                self.app.apply_crop_by_range(wl1, wl2, t1, t2)
+                self.app.apply_crop_by_range(wl1, wl2, t1, t2,
+                                             resample=resample)
             finally:
                 self.app.original_deltaA = saved
-        elif crop_changed:
-            self.app.apply_crop_by_range(wl1, wl2, t1, t2)
+        elif rebuild:
+            self.app.apply_crop_by_range(wl1, wl2, t1, t2, resample=resample)
         elif has_drops:
+            assert not self.app.resample_enabled
             new_delay = self.app.delay
             new_wl = self.app.wavelength
             t_lo, t_hi = float(new_delay[0]), float(new_delay[-1])
@@ -833,13 +981,31 @@ class CropDialog(QtWidgets.QDialog):
         cur_is_pinned = any(
             abs(app.original_delay[idx] - tv) < 1e-12
             for tv in self._drop_t_values)
-        h_cur, = ax.plot(wl_full, A_disp[:, idx], 'b-', linewidth=1.6)
+        spec = self._resample_spec()
+        rs_on = spec['enabled'] and self._resample_valid()
+        h_cur, = ax.plot(wl_full, A_disp[:, idx],
+                         color=('0.6' if rs_on else 'b'),
+                         linewidth=(1.0 if rs_on else 1.6))
         cur_tag = ', interp' if (has_preview and cur_is_pinned) else ''
         label_cur = (f't = {app.original_delay[idx]:.3g} '
                      f'{app.t_unit_ax()} (current{cur_tag})')
         h_cur.set_label(label_cur)
         leg_h.append(h_cur)
         leg_l.append(label_cur)
+
+        # Resampling preview: the current spectrum inside the λ range,
+        # binned exactly as Apply will do it.
+        if rs_on:
+            win = self._resample_window()
+            wl_rs, a_rs, info = ta_core.resample_wavelength(
+                wl_full[win], A_disp[win, idx], spec['dx'], spec['mode'])
+            mode = 'avg' if spec['mode'] == 'average' else 'decimate'
+            label_rs = (f"resampled (Δλ={spec['dx']:g} nm, {mode}): "
+                        f"{info['n_out']} pts")
+            h_rs, = ax.plot(wl_rs, a_rs, 'o-', color='k',
+                            markersize=3, linewidth=0.8, label=label_rs)
+            leg_h.append(h_rs)
+            leg_l.append(label_rs)
 
         # Mark dropped wavelengths as faint vertical lines so the user
         # sees which channels along this spectrum were interpolated.
@@ -1003,6 +1169,8 @@ class CropDialog(QtWidgets.QDialog):
         # changed, so the user's typed input is never overwritten.
         wlA, wlB = (wl1, wl2) if wl1 <= wl2 else (wl2, wl1)
         tA,  tB  = (t1, t2)  if t1 <= t2  else (t2, t1)
+        # Same edge snapping as Apply, so the "Kept" count matches.
+        wlA, wlB, tA, tB = self._snap_bounds(wlA, wlB, tA, tB)
 
         wl_full = app.original_wavelength
         t_full  = app.original_delay
