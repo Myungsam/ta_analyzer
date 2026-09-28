@@ -10,7 +10,7 @@ TA Analyzer is a Windows GUI for loading, correcting, visualizing and analyzing 
 
 Main features:
 - **Loading**: auto-detected single files, averaging several files, accumulating repeat scans from a folder, and a Custom loader where you mark the data layout yourself
-- **Corrections**: background, chirp (Sellmeier), solvent IRF subtraction, wavelength masks, t=0 shift, crop with **wavelength resampling** (v1.1.0), and removing/interpolating bad delays or wavelengths
+- **Corrections**: background, chirp (Sellmeier), solvent IRF subtraction, wavelength masks, t=0 shift, crop with **wavelength resampling** (v1.1.0) and **moving-average smoothing** (v1.2.0), and removing/interpolating bad delays or wavelengths
 - **Analysis**: Global Analysis (DADS/EADS, stretched exponentials), SVD, single-trace kinetic fit, LDA, MCR-ALS, coherence (FFT map, LPSVD)
 - **Export**: 2D matrices (CSV/TSV/xlsx), pinned spectra and kinetics, analysis results and residuals
 
@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.1.0** (latest) | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Wavelength resampling (Average / Decimate) in Crop Data, Korean/English user guide |
+| **v1.2.0** (latest) | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
+| v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Wavelength resampling (Average / Decimate) in Crop Data, Korean/English user guide |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Version before resampling |
 
 **Executable (no Python needed)**
@@ -28,8 +29,9 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.1.0      # latest (same as main)
-git checkout v1.0.0      # previous version
+git checkout v1.2.0      # latest (same as main)
+git checkout v1.1.0      # before moving average
+git checkout v1.0.0      # before resampling
 ```
 Without git, use **Source code (zip)** on the Releases page.
 
@@ -52,7 +54,7 @@ python ta_main.py
 ## 4. Quick start: standard workflow
 
 1. **Load Data...** → choose *Standard* and open a file such as `_TA_spectra_Accumulated.csv`.
-2. In **Crop Data...** set the λ/t range and, if you want fewer wavelength points, turn on **Resample λ** (section 5.3).
+2. In **Crop Data...** set the λ/t range and, if needed, turn on **Resample / smooth λ** to reduce the wavelength points (Average/Decimate) or smooth the spectra (Moving avg, section 5.3).
 3. **Background Correction...** subtracts the mean of the first N delays (t < 0).
 4. **Chirp Correction...**: click the 2D map or use *Auto-place* to mark t₀(λ), then press **Fit & Apply**.
 5. (Optional) **Subtract solvent IRF**, **Mask Wavelengths...**
@@ -76,14 +78,14 @@ Corrections never modify the loaded data; they are recomputed in the order **bac
 - **Mask**: sets wavelength ranges to NaN or 0.
 - **Set t=0 here**: moves t=0 to the crosshair position.
 
-### 5.3 Crop and wavelength resampling (v1.1.0)
+### 5.3 Crop, wavelength resampling and moving average
 
 ![Resampling in the Crop Data window](docs/images/crop_resample.png)
 
-The **Crop Data...** window cuts the λ/t range and can optionally reduce the number of wavelength points.
+The **Crop Data...** window cuts the λ/t range and can optionally reduce the number of wavelength points (Average / Decimate, v1.1.0) or smooth the spectra while keeping every point (Moving avg, v1.2.0). Only one of the three modes is applied.
 
 1. Enter the `λ range` and `t range` (*Full λ range* / *Full t range* select everything).
-2. Check **Resample λ** and enter the spacing **Δλ (nm)**.
+2. Check **Resample / smooth λ** and enter the spacing **Δλ (nm)**.
 3. Choose **Average** or **Decimate**.
 4. Compare the original (grey line) and the result (black dots and line) in the Spectrum panel, and check the point count shown as, e.g., `1200 → 79 λ points`.
 5. Press **Apply**.
@@ -102,6 +104,27 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 - Pinning delays/wavelengths for interpolation while resampling is on rebuilds the data from the original, so earlier interpolations that are not pinned again are lost.
 - **Revert to Original**, or Full range + unchecked Resample + Apply, returns to the original resolution. The status bar shows the state, e.g. `[resampled Δλ=5 nm, avg]`, and exported file names get `rs5nm` appended.
 
+#### Moving average (v1.2.0)
+
+![Moving average in the Crop Data window](docs/images/crop_moving_average.png)
+
+1. Check **Resample / smooth λ** and choose **Moving avg** (the Δλ field is disabled; Window and Kernel become active).
+2. Enter the window size k in **Window (px)**. Only odd values **3–101** are allowed; the default is 5.
+3. Choose the **Kernel**:
+   - **Box**: every point in the window has the same weight
+   - **Triangular**: weights 1, 2, …, m, …, 2, 1 (m = (k+1)/2), largest in the centre
+   - **Gaussian**: weights exp(−x²/2σ²) with **σ = k/6** (the window covers ±3σ)
+4. Compare the original (grey) and the smoothed result (black line) in the Spectrum panel, check that the point count is unchanged, e.g. `1200 → 1200 λ points (window 15 px, gaussian)`, and press **Apply**.
+
+**How it works**
+- Each wavelength point i gets the weighted mean of the k pixels centred on it: ΔA′ᵢ = Σ wⱼ ΔAᵢ₊ⱼ / Σ wⱼ. Every delay is smoothed the same way.
+- The **wavelength axis is unchanged** and so is the number of points. The window is in pixels, not nm, so with non-uniform spacing its width in nm varies slightly along the spectrum.
+- At the **edges** (first and last k//2 points) the positions outside the range are left out and the remaining weights renormalised, so edge values lean slightly towards their inner neighbours.
+- **NaN** points in a window (e.g. masks) are left out and the weights renormalised; a window that is entirely NaN gives NaN.
+- With solvent IRF subtraction, the solvent is smoothed with **the same kernel** before it is subtracted.
+- If the window is even, outside 3–101, or not smaller than the number of points in the selected range, a warning appears and **only the crop is applied, without smoothing**.
+- As with Average/Decimate, Apply resets the corrections and Revert restores the original. The status bar shows e.g. `[smoothed 15 px, gaussian]` and exported file names get `_ma15gaussian`.
+
 **Removing and interpolating delays/wavelengths**: mark glitched delays or wavelengths with **Pin (mark for drop)**; they are refilled with linear/cubic/pchip/akima/bilinear interpolation.
 
 ### 5.4 Analysis
@@ -117,7 +140,7 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 **Save residual** in GA and LDA writes an xlsx to the `residuals/` folder, which the Coherence window can load again.
 
 ### 5.5 Export
-- **Export 2D Data...**: the corrected matrix. The file name records the state (e.g. `_2D_BG5_chirp_cropped_rs2nm.csv`).
+- **Export 2D Data...**: the corrected matrix. The file name records the state (e.g. `_2D_BG5_chirp_cropped_rs2nm.csv`, or `_ma5box` for a moving average).
 - **Export 2D data_original...**: the matrix before corrections (crop/resampling included)
 - **Export pins** in the Spectrum/Kinetics panels and the Export buttons in each analysis window
 
@@ -143,6 +166,7 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 | A file cannot be read | Use the Custom loader and mark the X/Y/Z regions |
 | BG/chirp disappeared after resampling | Expected (section 5.3). Apply the corrections again after resampling |
 | "Δλ must be larger..." warning | Enter a Δλ larger than the mean wavelength spacing |
+| "moving-average window must be odd..." warning | Use an odd window (3–101) smaller than the number of points in the selected range |
 | Global Analysis does not converge | Change the initial τ values or fix the IRF t₀/FWHM |
 | Restore a zoomed plot | Toolbar Home button, or right-click the panel → Auto scale |
 
@@ -154,13 +178,20 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   # Git Bash, from the project root
   export PYTHONPATH=. PYTHONIOENCODING=utf-8 QT_QPA_PLATFORM=offscreen
   python test/test_crop_resample.py
+  python test/test_crop_moving_average.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data)
+- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving` selects a subset)
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.2.0** (2026-09-28)
+- **Moving avg** mode in Crop Data: pixel window (odd, 3–101), Box / Triangular / Gaussian (σ = k/6) kernels
+- Wavelength axis and point count unchanged; edges and NaNs renormalised
+- Solvent IRF smoothed with the same kernel; status bar `[smoothed k px, kernel]`, file names `_ma{k}{kernel}`
+- Crop window group renamed "Wavelength resampling / smoothing"
 
 **v1.1.0** (2026-09-28)
 - Wavelength resampling in Crop Data: Δλ (nm), Average (bin mean) / Decimate (point closest to the bin centre)

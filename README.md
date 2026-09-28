@@ -10,7 +10,7 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 주요 기능:
 - **로딩**: 단일 파일 자동 인식, 여러 파일 평균, 폴더의 반복 측정 누적(Accumulation), 레이아웃을 직접 지정하는 Custom 로더
-- **보정**: Background, Chirp(Sellmeier), 용매 IRF 빼기, 파장 마스크, t=0 이동, Crop과 **파장축 Resampling**(v1.1.0), 특정 delay/λ 제거 후 보간
+- **보정**: Background, Chirp(Sellmeier), 용매 IRF 빼기, 파장 마스크, t=0 이동, Crop과 **파장축 Resampling**(v1.1.0), **Moving average 평활**(v1.2.0), 특정 delay/λ 제거 후 보간
 - **분석**: Global Analysis(DADS/EADS, stretched exponential), SVD, 단일 trace Kinetic Fit, LDA, MCR-ALS, Coherence(FFT 맵, LPSVD)
 - **내보내기**: 2D 행렬(CSV/TSV/xlsx), 고정(pin)한 스펙트럼과 kinetics, 분석 결과와 residual
 
@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.1.0** (최신) | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Crop Data에 파장축 Resampling(Average / Decimate) 추가, 한/영 사용 설명서 |
+| **v1.2.0** (최신) | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
+| v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Crop Data에 파장축 Resampling(Average / Decimate) 추가, 한/영 사용 설명서 |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Resampling 이전 버전 |
 
 **실행 파일로 받기 (Python 불필요)**
@@ -28,8 +29,9 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.1.0      # 최신 버전 (main과 같음)
-git checkout v1.0.0      # 이전 버전
+git checkout v1.2.0      # 최신 버전 (main과 같음)
+git checkout v1.1.0      # Moving average 이전
+git checkout v1.0.0      # Resampling 이전
 ```
 git 없이 받으려면 Releases 페이지의 **Source code (zip)** 를 쓰면 됩니다.
 
@@ -52,7 +54,7 @@ python ta_main.py
 ## 4. 빠른 시작: 표준 워크플로
 
 1. **Load Data...** → *Standard*를 고르고 `_TA_spectra_Accumulated.csv` 같은 파일을 엽니다.
-2. **Crop Data...** 에서 λ/t 범위를 정하고, 필요하면 **Resample λ**를 켜서 파장 점 수를 줄입니다(5.3절).
+2. **Crop Data...** 에서 λ/t 범위를 정하고, 필요하면 **Resample / smooth λ**를 켜서 파장 점 수를 줄이거나(Average/Decimate) 스펙트럼을 평활합니다(Moving avg, 5.3절).
 3. **Background Correction...** 에서 t<0 구간 앞쪽 N개 delay의 평균을 뺍니다.
 4. **Chirp Correction...** 에서 2D 맵을 클릭하거나 *Auto-place*로 t₀(λ) 점을 찍고 **Fit & Apply**를 누릅니다.
 5. (선택) **Subtract solvent IRF**, **Mask Wavelengths...**
@@ -76,14 +78,14 @@ python ta_main.py
 - **Mask**: 파장 구간을 NaN 또는 0으로 바꿉니다.
 - **Set t=0 here**: 크로스헤어 위치를 t=0으로 옮깁니다.
 
-### 5.3 Crop과 파장축 Resampling (v1.1.0)
+### 5.3 Crop과 파장축 Resampling / Moving average
 
 ![Crop Data 창의 Resampling](docs/images/crop_resample.png)
 
-**Crop Data...** 창에서 λ/t 범위를 자르고, 선택적으로 파장축의 점 수를 줄입니다.
+**Crop Data...** 창에서 λ/t 범위를 자르고, 선택적으로 파장축의 점 수를 줄이거나(Average / Decimate, v1.1.0) 점 수는 그대로 둔 채 평활합니다(Moving avg, v1.2.0). 세 모드 중 하나만 적용됩니다.
 
 1. `λ range`와 `t range`를 입력합니다(*Full λ range* / *Full t range*로 전체 범위).
-2. **Resample λ**를 체크하고 **Δλ (nm)** 에 원하는 간격을 입력합니다.
+2. **Resample / smooth λ**를 체크하고 **Δλ (nm)** 에 원하는 간격을 입력합니다.
 3. **Average** 또는 **Decimate**를 고릅니다.
 4. 오른쪽 Spectrum 패널에서 원본(회색 선)과 결과(검은 점+선)를 비교하고, `1200 → 79 λ points`처럼 표시되는 점 수를 확인합니다.
 5. **Apply**를 누릅니다.
@@ -102,6 +104,27 @@ python ta_main.py
 - Resampling이 켜진 상태에서 delay/λ를 pin해 보간하면 원본부터 다시 만들기 때문에, 이전에 적용한 보간 중 다시 pin하지 않은 것은 사라집니다.
 - **Revert to Original** 또는 Full range + Resample 해제 + Apply로 원래 해상도로 돌아갑니다. 상태 표시줄에 `[resampled Δλ=5 nm, avg]`처럼 현재 상태가 표시되고, 내보내는 파일 이름에 `rs5nm`이 붙습니다.
 
+#### Moving average (v1.2.0)
+
+![Crop Data 창의 Moving average](docs/images/crop_moving_average.png)
+
+1. **Resample / smooth λ**를 체크하고 **Moving avg**를 고릅니다(Δλ 칸은 비활성, Window·Kernel 칸이 활성).
+2. **Window (px)** 에 창 크기 k를 입력합니다. 홀수 **3–101**만 허용되고, 기본은 5입니다.
+3. **Kernel**을 고릅니다.
+   - **Box**: 창 안 점들을 모두 같은 가중치로 평균
+   - **Triangular**: 가중치 1, 2, …, m, …, 2, 1 (m = (k+1)/2). 가운데 점이 가장 큼
+   - **Gaussian**: 가중치 exp(−x²/2σ²), **σ = k/6** (창이 ±3σ를 덮음)
+4. Spectrum 패널에서 원본(회색)과 평활 결과(검정 선)를 비교하고, `1200 → 1200 λ points (window 15 px, gaussian)`처럼 점 수가 그대로인지 확인한 뒤 **Apply**를 누릅니다.
+
+**동작 방식**
+- 각 파장 점 i의 ΔA를, i를 가운데 둔 k개 pixel의 가중 평균으로 바꿉니다: ΔA′ᵢ = Σ wⱼ ΔAᵢ₊ⱼ / Σ wⱼ. 모든 delay에 같은 방식으로 적용합니다.
+- **파장축은 그대로**이고 점 개수도 원본과 같습니다. window는 nm가 아니라 pixel 단위이므로, 파장 간격이 균일하지 않으면 창의 nm 폭이 위치마다 조금씩 다릅니다.
+- **가장자리**(앞뒤 k//2개 점)에서는 범위 밖 위치를 빼고 남은 가중치로 다시 나눕니다. 그래서 가장자리 값은 안쪽 이웃 쪽으로 약간 치우칩니다.
+- 창 안의 **NaN** 점(마스크 등)은 빼고 다시 나누고, 창 전체가 NaN이면 결과도 NaN입니다.
+- 용매 IRF 빼기를 쓰면 용매 데이터도 **같은 kernel**로 평활한 뒤 뺍니다.
+- 창 크기가 짝수이거나 3–101 밖이거나, 선택 범위의 점 수보다 작지 않으면 경고 후 **평활 없이 crop만 적용**됩니다.
+- Average/Decimate와 같이 Apply하면 보정이 초기화되고, Revert로 원래대로 돌아갑니다. 상태 표시줄에는 `[smoothed 15 px, gaussian]`, 내보내는 파일 이름에는 `_ma15gaussian`이 붙습니다.
+
 **특정 delay/λ 제거 후 보간**: 스펙트럼이나 kinetics에서 튀는 delay/λ를 **Pin (mark for drop)** 으로 표시하면 linear/cubic/pchip/akima/bilinear로 보간해 채웁니다.
 
 ### 5.4 분석
@@ -117,7 +140,7 @@ python ta_main.py
 GA와 LDA의 **Save residual**은 `residuals/` 폴더에 xlsx로 저장되고, Coherence 창에서 다시 불러올 수 있습니다.
 
 ### 5.5 내보내기
-- **Export 2D Data...**: 보정된 행렬. 파일 이름에 상태가 붙습니다(예: `_2D_BG5_chirp_cropped_rs2nm.csv`).
+- **Export 2D Data...**: 보정된 행렬. 파일 이름에 상태가 붙습니다(예: `_2D_BG5_chirp_cropped_rs2nm.csv`, Moving avg면 `_ma5box`).
 - **Export 2D data_original...**: 보정 전 행렬(crop/resampling은 반영됨)
 - Spectrum/Kinetics 패널의 **Export pins**, 각 분석 창의 Export 버튼
 
@@ -143,6 +166,7 @@ corner, t1, t2, ..., tN
 | 파일을 못 읽음 | Custom 로더로 X/Y/Z 영역을 직접 지정하세요 |
 | Resampling 후 BG/Chirp가 풀림 | 정상 동작입니다(5.3절). Resampling 후 보정을 다시 적용하세요 |
 | "Δλ must be larger..." 경고 | Δλ를 원본 평균 파장 간격보다 크게 입력하세요 |
+| "moving-average window must be odd..." 경고 | Window를 홀수(3–101)로, 선택한 파장 범위의 점 수보다 작게 입력하세요 |
 | Global Analysis가 수렴하지 않음 | τ 초깃값을 바꾸거나 IRF t₀/FWHM을 고정해 보세요 |
 | 확대한 그래프를 원래대로 | 툴바의 Home 버튼 또는 패널 우클릭 → Auto scale |
 
@@ -154,13 +178,20 @@ corner, t1, t2, ..., tN
   # Git Bash 기준, 프로젝트 루트에서
   export PYTHONPATH=. PYTHONIOENCODING=utf-8 QT_QPA_PLATFORM=offscreen
   python test/test_crop_resample.py
+  python test/test_crop_moving_average.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용)
+- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving`으로 일부만 가능)
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.2.0** (2026-09-28)
+- Crop Data에 **Moving avg** 모드 추가: pixel window(홀수 3–101), Box / Triangular / Gaussian(σ = k/6) kernel
+- 파장축과 점 개수는 그대로, 가장자리·NaN은 가중치 재정규화
+- 용매 IRF도 같은 kernel로 평활, 상태 표시줄 `[smoothed k px, kernel]`, 파일 이름 `_ma{k}{kernel}`
+- Crop 창 그룹 이름을 "Wavelength resampling / smoothing"으로 변경
 
 **v1.1.0** (2026-09-28)
 - Crop Data에 파장축 Resampling 추가: Δλ(nm) 입력, Average(구간 평균) / Decimate(구간 중심에 가장 가까운 점)

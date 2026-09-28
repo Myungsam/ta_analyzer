@@ -52,8 +52,8 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 
 | 계층 | 모듈 | 줄 수 | 역할 |
 |---|---|---:|---|
-| **Entry / Shell** | `ta_main.py` | 3,185 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
-| **Numerical core** | `ta_core.py` | 2,016 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `apply_bin_groups`), IRF 컨볼루션, GA(VARPRO), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
+| **Entry / Shell** | `ta_main.py` | 3,210 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
+| **Numerical core** | `ta_core.py` | 2,135 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), IRF 컨볼루션, GA(VARPRO), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
 | | `ta_lpsvd.py` | 525 | LPSVD(Lorentzian)와 Gaussian 감쇠 진동자 모드 분해 (1D 시계열) |
 | **Infra / Service** | `ta_residual_store.py` | 369 | GA/LDA residual을 `residuals/*.xlsx`로 저장하고, 목록 조회·로드 (CSV도 로드 가능) |
 | | `ta_device.py` | 725 | TensorFlow 장치 목록, `TFBackend`(lstsq/matmul), GPU 상태(pynvml/nvidia-smi), 팬 제어, keep-warm 스레드, 관리자 권한 재실행 |
@@ -61,7 +61,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | **Loading dialogs** | `ta_accumulate.py` | 589 | `LoadDataChooserDialog`(Standard/Custom/Accumulation 선택), `AccumulationDialog`(폴더 안 반복 측정 파일을 미리 보고 체크한 것만 평균) |
 | | `ta_load_custom.py` | 777 | `CustomLoadDialog`: 스프레드시트형 미리보기에서 X(λ), Y(t), Z(ΔA) 영역을 드래그로 지정. 자동 전치, 자동 감지 기능 포함 |
 | | `ta_dialogs_a.py` → `LoadAverageDialog` | | 여러 파일을 선택했을 때 평균을 내고 저장 또는 로드 |
-| **Correction dialogs** | `ta_dialogs_a.py` | 1,736 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling, delay/λ drop 뒤 보간), `MaskDialog` |
+| **Correction dialogs** | `ta_dialogs_a.py` | 1,808 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
 | | `ta_chirp.py` | 446 | `ChirpDialog`: 클릭 또는 ridge 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
 | **Analysis dialogs** | `ta_ga.py` | 1,888 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
@@ -122,7 +122,7 @@ graph TD
 | Solvent IRF | `sub_irf_applied`, `sub_irf_scale`, `sub_irf_solv_{wl,t,data}`, `sub_irf_aligned` | 용매 원본(자기 grid 기준)과 샘플 grid에 정렬한 캐시 |
 | Mask | `masked_regions: [(wl1, wl2, 'nan'|'zero')]` | |
 | Zero-time | `tZeroShift` | 누적된 delay 축 이동량 |
-| Crop / Resample (v1.1.0) | `crop_bounds`, `resample_enabled`, `resample_dx`, `resample_mode`, `resample_info`, `_crop_wl_pre_resample` | 요청한 crop 범위(원본 시간축 기준, 전체면 None)와 λ축 resampling 설정. `resample_info`는 bin 묶음(average: `starts`, decimate: `idx`), `_crop_wl_pre_resample`는 resampling 직전의 crop된 λ축 |
+| Crop / Resample (v1.1.0, v1.2.0) | `crop_bounds`, `resample_enabled`, `resample_mode`(`average`/`decimate`/`moving`), `resample_dx`, `resample_window`, `resample_kernel`, `resample_info`, `_crop_wl_pre_resample` | 요청한 crop 범위(원본 시간축 기준, 전체면 None)와 λ축 resampling 설정. 모드별 파라미터(bin: `resample_dx`, moving: `resample_window`/`resample_kernel`)는 커널이 받아들였을 때만 저장됩니다. `resample_info`는 수행한 연산(average: `starts`, decimate: `idx`, moving: `k`/`kernel`), `_crop_wl_pre_resample`는 resampling 직전의 crop된 λ축 |
 | Selection | `selWL`, `selT`, `_selT_idx` | 크로스헤어 위치. delay는 측정된 점으로만 이동(index 기반) |
 | Overlays | `specOverlays`(t 목록), `kinOverlays`(λ 목록) | Pin 기능 |
 | 표시 설정 | `delay_scale_mode`(linear/log/split), `split_threshold`, `main_view_t{min,max}`, `map_colormap`, `map_z_{min,max}`, `time_unit`(ps/us) | |
@@ -206,6 +206,7 @@ deltaA  ──► 2D map / Spectrum / Kinetics / 모든 분석
 | `apply_crop_by_range(..., resample=)` | 범위를 먼저 검증(빈 범위면 상태 변경 없이 경고)한 뒤 `crop_bounds`를 저장하고, `_rebuild_working_grid()`가 `original_*`에서 λ/t 마스크로 잘라낸 다음 선택적으로 λ축을 `ta_core.resample_wavelength`로 줄여 `deltaA_raw`를 만듦. `resample` 키워드 없이 호출하면(Revert 등) resampling 해제 | BG, chirp, ridge, solvent 정렬, tZeroShift, mask, GA 결과, zoom. overlay와 선택값은 새 범위로 clip |
 | `CropDialog._apply` + drop | drop한 delay/λ를 `interpolate_missing_{columns,rows,2d}`(linear/cubic/pchip/akima/bilinear)로 보간. crop 범위가 바뀌면 원본 전체를 보간한 뒤 crop하고 `original_deltaA`는 되돌림. 범위와 resample 설정이 그대로이고 resampling이 꺼져 있으면 `interpolate_*_at`으로 `deltaA_raw`만 수정. resampling이 켜져 있으면 항상 원본부터 재구성 | GA 결과 |
 | `CropDialog` resample 설정 | 균일 bin `[λ_min + kΔλ, λ_min + (k+1)Δλ)`. Average = bin 평균(λ, ΔA nanmean), Decimate = bin 중심에 가장 가까운 원본 행. 빈 bin 제외. Δλ ≤ 평균 간격이면 경고 후 crop만 적용. 스핀박스 6자리 반올림 오차는 현재 요청/전체 경계로 snap(`_snap_bounds`) | Crop과 같음 |
+| `CropDialog` moving 모드 (v1.2.0) | 홀수 pixel window k(3–101, < 점 수)와 kernel(box / triangular / gaussian σ=k/6)로 ΔA만 가중 이동 평균. λ축과 점 개수는 그대로이고, 가장자리·NaN은 `scipy.ndimage.correlate1d`의 num/den으로 재정규화. 활성 위젯과 변경 판정은 `_MODE_PARAMS` 표 하나로 결정 | Crop과 같음 |
 | `apply_zero_time_shift` / "Set t=0 here" | `delay -= δ`, `tZeroShift += δ` | kinetics zoom |
 | `reset_corrections` | 보정 플래그를 모두 끄고 tZeroShift를 되돌림 (로드한 용매는 메모리에 유지) | 패널 zoom |
 
@@ -303,7 +304,7 @@ def _open_dialog(self, DialogClass, attr_name, *args):
 
 `is_cropped()`는 resampling 직전 grid의 길이로 판정합니다. 전체 범위에서 resampling만 한 경우는 cropped가 아닙니다. Revert 버튼은 `is_modified()` = `is_cropped() or resample_enabled`를 따릅니다.
 
-Solvent IRF: resampling이 켜져 있으면 `realign_solvent()`가 원본 용매를 `_crop_wl_pre_resample` grid에 정렬하고, 샘플이 쓴 bin 묶음을 `apply_bin_groups`로 그대로 적용한 뒤 chirp를 적용합니다.
+Solvent IRF: resampling이 켜져 있으면 `realign_solvent()`가 원본 용매를 `_crop_wl_pre_resample` grid에 정렬하고, 샘플이 쓴 연산(bin 묶음 또는 moving kernel)을 `apply_resample_info`로 그대로 적용한 뒤 chirp를 적용합니다. 정렬이 실패하면 용매 빼기를 생략하고 traceback을 stderr에 남깁니다.
 
 ---
 

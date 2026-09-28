@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 
 import numpy as np
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -198,13 +199,17 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # for in the original frame; None ⇒ full range.  It only seeds the
         # Crop dialog and its "did the crop change?" test — whether the
         # data *is* cropped is always derived from the grid (is_cropped).
-        # With resampling on, the working λ axis is binned from the
-        # cropped original axis (_crop_wl_pre_resample); resample_info
-        # holds the bin grouping so the solvent can reuse it.
+        # With resampling on, the working λ axis is binned (or, in
+        # 'moving' mode, smoothed in place) from the cropped original axis
+        # (_crop_wl_pre_resample); resample_info describes the operation
+        # so the solvent can reuse it.  Each mode keeps its own parameters
+        # (dx for the bin modes, window/kernel for 'moving').
         self.crop_bounds: tuple | None = None
         self.resample_enabled = False
         self.resample_dx = 1.0
-        self.resample_mode = 'average'     # 'average' | 'decimate'
+        self.resample_mode = 'average'     # 'average' | 'decimate' | 'moving'
+        self.resample_window = 5           # moving-average window (px, odd)
+        self.resample_kernel = 'box'       # 'box' | 'triangular' | 'gaussian'
         self.resample_info: dict | None = None
         self._crop_wl_pre_resample: np.ndarray | None = None
 
@@ -894,6 +899,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.resample_enabled = False
         self.resample_dx = 1.0
         self.resample_mode = 'average'
+        self.resample_window = 5
+        self.resample_kernel = 'box'
         self.resample_info = None
         self._crop_wl_pre_resample = None
         # New data ⇒ any previous GA result refers to the OLD matrix
@@ -1048,8 +1055,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                 self._crop_wl_pre_resample if resampled else self.wavelength,
                 self.delay)
             if resampled:
-                aligned = ta_core.apply_bin_groups(aligned,
-                                                   self.resample_info)
+                aligned = ta_core.apply_resample_info(aligned,
+                                                      self.resample_info)
             # Mirror the sample's chirp correction onto the solvent.
             # Use the same chirp_params + same (wavelength, delay)
             # axes so each row shifts by exactly t₀(λ_i), matching the
@@ -1064,6 +1071,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             self.sub_irf_aligned = aligned
         except Exception:
             # Defensive: a corrupted solvent should not crash the pipeline
+            traceback.print_exc()
             self.sub_irf_aligned = None
 
     def get_chirp_base_data(self):
@@ -1090,8 +1098,17 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         return self.is_cropped() or self.resample_enabled
 
     def _resample_tag(self) -> str:
+        if self.resample_mode == 'moving':
+            return (f'smoothed {self.resample_window} px, '
+                    f'{self.resample_kernel}')
         mode = 'avg' if self.resample_mode == 'average' else 'decimate'
         return f'resampled Δλ={self.resample_dx:g} nm, {mode}'
+
+    def _resample_suffix(self) -> str:
+        """File-name tag of the active resampling (export names)."""
+        if self.resample_mode == 'moving':
+            return f'ma{self.resample_window}{self.resample_kernel}'
+        return f'rs{self.resample_dx:g}nm'
 
     def update_all(self):
         """Recompute corrections, then redraw all three panels."""
@@ -1164,7 +1181,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         if self.is_cropped():
             base += ', cropped'
         if self.resample_enabled:
-            base += ', resampled'
+            base += (', smoothed' if self.resample_mode == 'moving'
+                     else ', resampled')
         if scale_str:
             return rf'2D $\Delta$A  ({base}, {scale_str} scale)'
         return rf'2D $\Delta$A  ({base})'
@@ -2737,11 +2755,13 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.crop_bounds = (None if full
                             else (float(wl_min), float(wl_max),
                                   float(t_min), float(t_max)))
-        on = bool(resample and resample.get('enabled'))
-        if on:
-            self.resample_dx = float(resample['dx'])
-            self.resample_mode = str(resample['mode'])
-        self._rebuild_working_grid(wl_mask, t_mask, on)
+        spec = None
+        if resample and resample.get('enabled'):
+            spec = {'mode': str(resample.get('mode', self.resample_mode)),
+                    'dx': resample.get('dx', self.resample_dx),
+                    'window': resample.get('window', self.resample_window),
+                    'kernel': resample.get('kernel', self.resample_kernel)}
+        self._rebuild_working_grid(wl_mask, t_mask, spec)
 
         # Reset corrections (they were fit to the old range)
         self.bg_applied = False
@@ -2812,24 +2832,32 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self._update_status_label()
         self.update_all()
 
-    def _rebuild_working_grid(self, wl_mask, t_mask, resample_on: bool):
-        """Slice the originals with the masks and, if requested, bin the
-        λ axis with the current ``resample_dx`` / ``resample_mode``."""
+    def _rebuild_working_grid(self, wl_mask, t_mask, spec: dict | None):
+        """Slice the originals with the masks and, if ``spec`` is given,
+        resample the λ axis with it.  The spec's mode and parameters are
+        stored only when the kernel accepted them, so the app state (which
+        seeds the Crop dialog) never holds a rejected value."""
         self.wavelength = self.original_wavelength[wl_mask].copy()
         self.delay = self.original_delay[t_mask].copy()
         self.deltaA_raw = self.original_deltaA[np.ix_(wl_mask, t_mask)].copy()
         self._crop_wl_pre_resample = self.wavelength.copy()
         self.resample_enabled = False
         self.resample_info = None
-        if not resample_on:
+        if spec is None:
             return
-        wl_r, A_r, info = ta_core.resample_wavelength(
-            self.wavelength, self.deltaA_raw,
-            self.resample_dx, self.resample_mode)
-        if info['applied']:
-            self.wavelength, self.deltaA_raw = wl_r, A_r
-            self.resample_enabled = True
-            self.resample_info = info
+        wl_r, A_r, info = ta_core.resample_by_spec(
+            self.wavelength, self.deltaA_raw, spec)
+        if not info['applied']:
+            return
+        self.wavelength, self.deltaA_raw = wl_r, A_r
+        self.resample_enabled = True
+        self.resample_info = info
+        self.resample_mode = info['mode']
+        if info['mode'] == 'moving':
+            self.resample_window = info['k']
+            self.resample_kernel = info['kernel']
+        else:
+            self.resample_dx = info['dx']
 
     def interpolate_delays_at(self, drop_idx, method: str = 'linear'):
         """Overwrite the spectra at ``drop_idx`` with values interpolated
@@ -3003,7 +3031,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         if self.is_cropped():
             parts.append('cropped')
         if self.resample_enabled:
-            parts.append(f'rs{self.resample_dx:g}nm')
+            parts.append(self._resample_suffix())
         if self.masked_regions:
             parts.append(f'masked{len(self.masked_regions)}')
         suffix = '_'.join(parts) if parts else 'raw'
@@ -3019,7 +3047,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             return
         suffix = 'cropped_original' if self.is_cropped() else 'original'
         if self.resample_enabled:
-            suffix += f'_rs{self.resample_dx:g}nm'
+            suffix += f'_{self._resample_suffix()}'
         self._export_2d_matrix(
             self.deltaA_raw, suffix,
             caption='Export 2D map (original, pre-processing)')

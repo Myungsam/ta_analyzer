@@ -16,6 +16,13 @@ from ta_widgets import (
 import ta_core
 
 
+# Crop-dialog resample modes and the parameter widgets each one uses.
+# Drives both which inputs are enabled and which settings count as a
+# change on Apply, so the two can never disagree.
+_MODE_PARAMS = {'average': ('dx',), 'decimate': ('dx',),
+                'moving': ('window', 'kernel')}
+
+
 def _bounds_close(a: float, b: float) -> bool:
     """Equal within the 6-decimal rounding of the range spinboxes."""
     return abs(a - b) <= 1e-6 * max(1.0, abs(b))
@@ -180,29 +187,50 @@ class CropDialog(QtWidgets.QDialog):
         ctrl.addWidget(self.btn_full_t, 1, 4)
         outer.addLayout(ctrl)
 
-        # ---- Wavelength resampling (applied after the crop) ----
-        gb_rs = QtWidgets.QGroupBox(u'Wavelength resampling')
-        rs_row = QtWidgets.QHBoxLayout(gb_rs)
-        self.cb_resample = QtWidgets.QCheckBox(u'Resample λ')
+        # ---- Wavelength resampling / smoothing (applied after the crop) ----
+        gb_rs = QtWidgets.QGroupBox(u'Wavelength resampling / smoothing')
+        rs_grid = QtWidgets.QGridLayout(gb_rs)
+        self.cb_resample = QtWidgets.QCheckBox(u'Resample / smooth λ')
         self.cb_resample.setChecked(bool(app.resample_enabled))
-        rs_row.addWidget(self.cb_resample)
-        rs_row.addWidget(make_label(u'Δλ (nm):', 'right'))
+        rs_grid.addWidget(self.cb_resample, 0, 0)
+        rs_grid.addWidget(make_label(u'Δλ (nm):', 'right'), 0, 1)
         self.ed_resample_dx = make_double_edit(
             float(app.resample_dx), minv=0.001, maxv=1000.0, decimals=3)
-        rs_row.addWidget(self.ed_resample_dx)
+        rs_grid.addWidget(self.ed_resample_dx, 0, 2)
         self.rb_avg = QtWidgets.QRadioButton('Average')
         self.rb_dec = QtWidgets.QRadioButton('Decimate')
-        (self.rb_dec if app.resample_mode == 'decimate'
-         else self.rb_avg).setChecked(True)
-        rs_row.addWidget(self.rb_avg)
-        rs_row.addWidget(self.rb_dec)
+        self.rb_mov = QtWidgets.QRadioButton('Moving avg')
+        self.bg_mode = QtWidgets.QButtonGroup(self)
+        for i, rb in enumerate((self.rb_avg, self.rb_dec, self.rb_mov)):
+            self.bg_mode.addButton(rb, i)
+        {'decimate': self.rb_dec, 'moving': self.rb_mov}.get(
+            app.resample_mode, self.rb_avg).setChecked(True)
+        rs_grid.addWidget(self.rb_avg, 0, 3)
+        rs_grid.addWidget(self.rb_dec, 0, 4)
+        rs_grid.addWidget(self.rb_mov, 1, 0)
+        rs_grid.addWidget(make_label('Window (px):', 'right'), 1, 1)
+        self.ed_window = QtWidgets.QSpinBox()
+        self.ed_window.setRange(*ta_core.MOVING_K_RANGE)
+        self.ed_window.setSingleStep(2)
+        self.ed_window.setValue(int(app.resample_window))
+        rs_grid.addWidget(self.ed_window, 1, 2)
+        rs_grid.addWidget(make_label('Kernel:', 'right'), 1, 3)
+        self.dd_kernel = QtWidgets.QComboBox()
+        for key in ta_core.MOVING_KERNELS:
+            self.dd_kernel.addItem(key.capitalize(), key)
+        self.dd_kernel.setCurrentIndex(
+            max(0, self.dd_kernel.findData(app.resample_kernel)))
+        rs_grid.addWidget(self.dd_kernel, 1, 4)
         self.lbl_resample_info = QtWidgets.QLabel('')
-        rs_row.addWidget(self.lbl_resample_info, stretch=1)
+        rs_grid.addWidget(self.lbl_resample_info, 0, 5, 2, 1)
+        rs_grid.setColumnStretch(5, 1)
         rs_hint = QtWidgets.QLabel(
             'Bins of width Δλ start at the cropped λ_min.  Average: mean of '
             'the points in each bin.  Decimate: keep the point closest to '
-            'each bin centre.  Like a crop, applying resets BG / chirp / '
-            'masks.')
+            'each bin centre.  Moving avg: each point becomes the weighted '
+            'mean of the odd window of pixels around it (box / triangular / '
+            'gaussian, σ = window/6); the λ axis and point count stay the '
+            'same.  Like a crop, applying resets BG / chirp / masks.')
         rs_hint.setWordWrap(True)
         rs_hint.setStyleSheet('font-style: italic; color: #4d4d4d;')
         rs_col = QtWidgets.QVBoxLayout()
@@ -395,8 +423,14 @@ class CropDialog(QtWidgets.QDialog):
         for ed in (self.ed_wl_min, self.ed_wl_max, self.ed_resample_dx):
             ed.valueChanged.connect(
                 lambda _: self._resample_timer.start())
-        for w in (self.cb_resample, self.rb_avg):
-            w.toggled.connect(lambda _: self._resample_timer.start())
+        self.ed_window.valueChanged.connect(
+            lambda _: self._resample_timer.start())
+        self.dd_kernel.currentIndexChanged.connect(
+            lambda _: self._resample_timer.start())
+        self.cb_resample.toggled.connect(
+            lambda _: self._resample_timer.start())
+        self.bg_mode.buttonToggled.connect(
+            lambda *_: self._resample_timer.start())
 
         self.btn_full_wl.clicked.connect(self._set_full_wl)
         self.btn_full_t.clicked.connect(self._set_full_t)
@@ -449,10 +483,17 @@ class CropDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------------
     # Wavelength resampling
     # ------------------------------------------------------------------
+    def _resample_mode(self) -> str:
+        if self.rb_mov.isChecked():
+            return 'moving'
+        return 'average' if self.rb_avg.isChecked() else 'decimate'
+
     def _resample_spec(self) -> dict:
         return {'enabled': self.cb_resample.isChecked(),
+                'mode': self._resample_mode(),
                 'dx': float(self.ed_resample_dx.value()),
-                'mode': 'average' if self.rb_avg.isChecked() else 'decimate'}
+                'window': int(self.ed_window.value()),
+                'kernel': self.dd_kernel.currentData()}
 
     def _snap_bounds(self, wl1, wl2, t1, t2):
         """Spinbox values are rounded to 6 decimals, so a bound meant to
@@ -483,8 +524,8 @@ class CropDialog(QtWidgets.QDialog):
         wl = self.app.original_wavelength[self._resample_window()]
         if wl.size == 0:
             return None
-        _, _, info = ta_core.resample_wavelength(
-            wl, np.zeros((wl.size, 0)), spec['dx'], spec['mode'])
+        _, _, info = ta_core.resample_by_spec(
+            wl, np.zeros((wl.size, 0)), spec)
         return info
 
     def _resample_valid(self) -> bool:
@@ -493,23 +534,37 @@ class CropDialog(QtWidgets.QDialog):
 
     def _update_resample_info(self):
         spec = self._resample_spec()
-        for w in (self.ed_resample_dx, self.rb_avg, self.rb_dec):
-            w.setEnabled(spec['enabled'])
+        on = spec['enabled']
+        for rb in (self.rb_avg, self.rb_dec, self.rb_mov):
+            rb.setEnabled(on)
+        params = _MODE_PARAMS[spec['mode']]
+        for key, w in (('dx', self.ed_resample_dx),
+                       ('window', self.ed_window),
+                       ('kernel', self.dd_kernel)):
+            w.setEnabled(on and key in params)
         info = self._resample_probe()
-        if not spec['enabled'] or info is None:
+        if not on or info is None:
             self.lbl_resample_info.setText('')
             return
         if not info['applied']:
             self.lbl_resample_info.setStyleSheet('color: #c0392b;')
-            self.lbl_resample_info.setText(
-                f"Δλ ≤ mean spacing {info['mean_spacing']:.3f} nm — "
-                'Apply will crop without resampling')
+            if spec['mode'] == 'moving':
+                msg = (f"window must be odd, 3–101 and smaller than the "
+                       f"{info['n_in']} λ points in range — Apply will crop "
+                       'without smoothing')
+            else:
+                msg = (f"Δλ ≤ mean spacing {info['mean_spacing']:.3f} nm — "
+                       'Apply will crop without resampling')
+            self.lbl_resample_info.setText(msg)
             return
         self.lbl_resample_info.setStyleSheet('color: #333;')
-        mode = 'avg' if spec['mode'] == 'average' else 'decimate'
+        if spec['mode'] == 'moving':
+            detail = f"window {info['k']} px, {info['kernel']}"
+        else:
+            mode = 'avg' if spec['mode'] == 'average' else 'decimate'
+            detail = f"Δλ={spec['dx']:g} nm, {mode}"
         self.lbl_resample_info.setText(
-            f"{info['n_in']} → {info['n_out']} λ points "
-            f"(Δλ={spec['dx']:g} nm, {mode})")
+            f"{info['n_in']} → {info['n_out']} λ points ({detail})")
 
     def _on_resample_changed(self):
         self._update_resample_info()
@@ -550,14 +605,21 @@ class CropDialog(QtWidgets.QDialog):
         if t1 > t2:
             t1, t2 = t2, t1
 
-        # An unusable Δλ (not larger than the mean λ spacing) falls back to
-        # a plain crop, after telling the user.
+        # An unusable Δλ (not larger than the mean λ spacing) or moving
+        # window falls back to a plain crop, after telling the user.
         spec = self._resample_spec()
         if spec['enabled'] and not self._resample_valid():
-            warn_box(self, 'Resampling skipped',
-                     u'Δλ must be larger than the mean wavelength spacing '
-                     u'of the selected range.  The crop is applied without '
-                     u'resampling.')
+            if spec['mode'] == 'moving':
+                warn_box(self, 'Smoothing skipped',
+                         u'The moving-average window must be odd, between '
+                         u'3 and 101 pixels, and smaller than the number of '
+                         u'wavelength points in the selected range.  The '
+                         u'crop is applied without smoothing.')
+            else:
+                warn_box(self, 'Resampling skipped',
+                         u'Δλ must be larger than the mean wavelength '
+                         u'spacing of the selected range.  The crop is '
+                         u'applied without resampling.')
             spec = dict(spec, enabled=False)
         resample = spec if spec['enabled'] else None
 
@@ -571,11 +633,15 @@ class CropDialog(QtWidgets.QDialog):
             not _bounds_close(new, old)
             for new, old in zip((wl1, wl2, t1, t2), self._current_bounds()))
         app = self.app
+        current = {'dx': app.resample_dx, 'window': app.resample_window,
+                   'kernel': app.resample_kernel}
         resample_changed = (
             spec['enabled'] != bool(app.resample_enabled)
             or (spec['enabled']
-                and (abs(spec['dx'] - app.resample_dx) > 1e-9
-                     or spec['mode'] != app.resample_mode)))
+                and (spec['mode'] != app.resample_mode
+                     or any(abs(spec[p] - current[p]) > 1e-9 if p == 'dx'
+                            else spec[p] != current[p]
+                            for p in _MODE_PARAMS[spec['mode']]))))
         rebuild = crop_changed or resample_changed
 
         method = self.dd_interp_method.currentText()
@@ -994,16 +1060,22 @@ class CropDialog(QtWidgets.QDialog):
         leg_l.append(label_cur)
 
         # Resampling preview: the current spectrum inside the λ range,
-        # binned exactly as Apply will do it.
+        # binned / smoothed exactly as Apply will do it.
         if rs_on:
             win = self._resample_window()
-            wl_rs, a_rs, info = ta_core.resample_wavelength(
-                wl_full[win], A_disp[win, idx], spec['dx'], spec['mode'])
-            mode = 'avg' if spec['mode'] == 'average' else 'decimate'
-            label_rs = (f"resampled (Δλ={spec['dx']:g} nm, {mode}): "
-                        f"{info['n_out']} pts")
-            h_rs, = ax.plot(wl_rs, a_rs, 'o-', color='k',
-                            markersize=3, linewidth=0.8, label=label_rs)
+            wl_rs, a_rs, info = ta_core.resample_by_spec(
+                wl_full[win], A_disp[win, idx], spec)
+            if spec['mode'] == 'moving':
+                label_rs = (f"smoothed (window {info['k']} px, "
+                            f"{info['kernel']}): {info['n_out']} pts")
+                style = dict(linestyle='-', marker=None)
+            else:
+                mode = 'avg' if spec['mode'] == 'average' else 'decimate'
+                label_rs = (f"resampled (Δλ={spec['dx']:g} nm, {mode}): "
+                            f"{info['n_out']} pts")
+                style = dict(linestyle='-', marker='o', markersize=3)
+            h_rs, = ax.plot(wl_rs, a_rs, color='k', linewidth=0.8,
+                            label=label_rs, **style)
             leg_h.append(h_rs)
             leg_l.append(label_rs)
 

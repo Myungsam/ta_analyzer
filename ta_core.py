@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import erfc, erfcx
 from scipy.optimize import minimize, least_squares
+from scipy.ndimage import correlate1d
 from matplotlib import cm as _mpl_cm
 
 
@@ -803,7 +804,7 @@ def resample_wavelength(wl: np.ndarray, A: np.ndarray, dx: float,
     info   : dict with ``applied, mode, dx, origin, mean_spacing, n_in,
              n_out`` plus ``starts`` (average) or ``idx`` (decimate) — the
              grouping, reusable on another matrix via
-             :func:`apply_bin_groups`.
+             :func:`apply_resample_info`.
     """
     wl = np.asarray(wl, dtype=float).ravel()
     A = np.asarray(A, dtype=float)
@@ -813,6 +814,9 @@ def resample_wavelength(wl: np.ndarray, A: np.ndarray, dx: float,
     if n > 1 and np.any(np.diff(wl) <= 0):
         raise ValueError('wavelength axis must be strictly ascending')
     mode = str(mode).lower()
+    if mode == 'moving':
+        raise ValueError('moving average is not a bin mode; use '
+                         'resample_by_spec / moving_average_wavelength')
     if mode not in RESAMPLE_MODES:
         raise ValueError(f'mode must be one of {RESAMPLE_MODES}, got {mode!r}')
     dx = float(dx)
@@ -840,20 +844,28 @@ def resample_wavelength(wl: np.ndarray, A: np.ndarray, dx: float,
                        dtype=np.int64)
         info['idx'] = idx
         wl_new = wl[idx]
-    return wl_new, apply_bin_groups(A, info), info
+    return wl_new, apply_resample_info(A, info), info
 
 
-def apply_bin_groups(A: np.ndarray, info: dict) -> np.ndarray:
-    """Apply the bin grouping of a :func:`resample_wavelength` result to
-    another matrix ``A`` defined on the same (pre-resample) wavelength
-    grid — e.g. a solvent reference aligned to the sample grid.
+def apply_resample_info(A: np.ndarray, info: dict) -> np.ndarray:
+    """Apply the operation described by a resampling ``info`` to another
+    matrix ``A`` defined on the same (pre-resample) wavelength grid —
+    e.g. a solvent reference aligned to the sample grid.
 
     Average groups use nanmean (all-NaN group → NaN, no RuntimeWarning);
-    decimate groups pick the same rows.  A no-op ``info`` returns a copy.
+    decimate groups pick the same rows; moving averages reuse the same
+    kernel (a row count other than ``info['n_in']`` raises).  A no-op
+    ``info`` returns a copy.
     """
     A = np.asarray(A, dtype=float)
     if not info.get('applied'):
         return A.copy()
+    if info['mode'] == MOVING_MODE:
+        if A.shape[0] != info['n_in']:
+            raise ValueError(f"moving average of {info['n_in']} rows "
+                             f'applied to {A.shape[0]} rows')
+        return _moving_apply(A, moving_kernel_weights(info['k'],
+                                                      info['kernel']))
     if info['mode'] == 'decimate':
         return A[info['idx']].copy()
     starts = info['starts']
@@ -864,6 +876,110 @@ def apply_bin_groups(A: np.ndarray, info: dict) -> np.ndarray:
         out = sums / counts
     out[counts == 0] = np.nan
     return out
+
+
+apply_bin_groups = apply_resample_info   # v1.1.0 name
+
+
+MOVING_MODE = 'moving'
+ALL_RESAMPLE_MODES = RESAMPLE_MODES + (MOVING_MODE,)
+MOVING_KERNELS = ('box', 'triangular', 'gaussian')
+MOVING_K_RANGE = (3, 101)
+
+
+def moving_kernel_weights(k: int, kernel: str = 'box') -> np.ndarray:
+    """Weights of an odd-length moving-average kernel.
+
+    box        : all ones
+    triangular : 1, 2, …, m, …, 2, 1   with m = (k + 1) / 2
+    gaussian   : exp(-x² / 2σ²), x = -(k-1)/2 … (k-1)/2, σ = k / 6
+                 (the window spans ±3σ)
+    """
+    k = int(k)
+    if kernel == 'box':
+        return np.ones(k)
+    if kernel == 'triangular':
+        m = (k + 1) // 2
+        return np.r_[1:m + 1, m - 1:0:-1].astype(float)
+    if kernel == 'gaussian':
+        x = np.arange(k) - k // 2
+        sigma = k / 6.0
+        return np.exp(-x ** 2 / (2.0 * sigma ** 2))
+    raise ValueError(f'kernel must be one of {MOVING_KERNELS}, got {kernel!r}')
+
+
+def _moving_apply(A: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Weighted moving average of ``A`` along axis 0 with weights ``w``.
+
+    Positions outside the array and NaN samples are left out and the
+    remaining weights renormalised, so the output keeps the input shape;
+    a window without any finite sample gives NaN.
+    """
+    A = np.asarray(A, dtype=float)
+    A2 = A.reshape(A.shape[0], -1)       # 1-D → column; 2-D unchanged
+    finite = np.isfinite(A2)
+    num = correlate1d(np.where(finite, A2, 0.0), w, axis=0,
+                      mode='constant', cval=0.0)
+    den = correlate1d(finite.astype(float), w, axis=0,
+                      mode='constant', cval=0.0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = num / den
+    out[den <= 0] = np.nan
+    return out.reshape(A.shape)
+
+
+def _as_window(k):
+    """``k`` as an int when it is an integer value (not bool), else None."""
+    if isinstance(k, (bool, np.bool_)):
+        return None
+    if isinstance(k, (int, np.integer)):
+        return int(k)
+    if isinstance(k, (float, np.floating)) and float(k).is_integer():
+        return int(k)
+    return None
+
+
+def moving_average_wavelength(wl: np.ndarray, A: np.ndarray, k,
+                              kernel: str = 'box'):
+    """Smooth ΔA along the wavelength axis with a pixel-window kernel.
+
+    The wavelength axis and the number of points are unchanged: each
+    point becomes the weighted mean of the ``k`` points centred on it
+    (odd ``k``; edges and NaNs renormalised, see :func:`_moving_apply`).
+    ``kernel`` is one of :data:`MOVING_KERNELS`.
+
+    ``k`` must be an odd integer in :data:`MOVING_K_RANGE` and smaller
+    than the number of points; otherwise — or for an unknown kernel —
+    copies of the inputs are returned with ``info['applied'] = False``.
+
+    Returns ``(wl, A_smoothed, info)`` with ``info`` holding ``applied,
+    mode='moving', k, kernel, n_in, n_out`` — reusable on another matrix
+    of the same length via :func:`apply_resample_info`.
+    """
+    wl = np.asarray(wl, dtype=float).ravel()
+    A = np.asarray(A, dtype=float)
+    n = wl.size
+    if A.shape[0] != n:
+        raise ValueError(f'Shape mismatch: A {A.shape}, wl {wl.shape}')
+    kk = _as_window(k)
+    info = {'applied': False, 'mode': MOVING_MODE, 'k': kk if kk is not None else k,
+            'kernel': kernel, 'n_in': n, 'n_out': n}
+    lo, hi = MOVING_K_RANGE
+    if (kk is None or kk % 2 == 0 or not lo <= kk <= hi or kk >= n
+            or kernel not in MOVING_KERNELS):
+        return wl.copy(), A.copy(), info
+    info['applied'] = True
+    return wl.copy(), _moving_apply(A, moving_kernel_weights(kk, kernel)), info
+
+
+def resample_by_spec(wl: np.ndarray, A: np.ndarray, spec: dict):
+    """Dispatch a Crop-dialog spec ``{'mode', 'dx' | 'window', 'kernel'}``
+    to :func:`resample_wavelength` (bin modes) or
+    :func:`moving_average_wavelength`."""
+    if spec['mode'] == MOVING_MODE:
+        return moving_average_wavelength(wl, A, spec['window'],
+                                         spec['kernel'])
+    return resample_wavelength(wl, A, spec['dx'], spec['mode'])
 
 
 def fit_chirp_params(pts: np.ndarray):
