@@ -1385,26 +1385,38 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                      f"{app.t_unit_txt()} ({n_in}/{len(app.delay)} pts)")
         if app.ga_stretch_on.any():
             lines.append(f"IRF mode (stretched): {app.ga_irf_mode}")
+        stats = info.get('stats')
+        app.ga_result_stats = stats
+        u = app.t_unit_txt()
+
+        def pm(val, key, i=None):
+            """'value ± σ', or 'value (fixed)' when σ is NaN."""
+            sd = None if stats is None else stats[key]
+            if sd is not None and i is not None:
+                sd = sd[i]
+            if sd is None or not np.isfinite(sd):
+                return f'{val:.4g}'
+            return f'{val:.4g} ± {sd:.2g}'
+
         lines.append('')
-        lines.append('Time constants:')
+        lines.append(u'Time constants (± 1σ):')
         for ii, tv in enumerate(res['tau']):
             tag = ' (fixed)' if app.ga_tau_fixed[ii] else ''
+            txt = f'  tau_{ii + 1} = {pm(tv, "tau_std", ii)} {u}{tag}'
             if app.ga_result_stretch_on[ii]:
-                bv = app.ga_result_beta[ii]
                 btag = ' (β fixed)' if app.ga_beta_fixed[ii] else ''
-                lines.append(
-                    f'  tau_{ii + 1} = {tv:10.4g} {app.t_unit_txt()}{tag}'
-                    f'   β = {bv:.3g}{btag}   [stretched]')
-            else:
-                lines.append(
-                    f'  tau_{ii + 1} = {tv:10.4g} {app.t_unit_txt()}{tag}')
+                txt += (f'   β = {pm(app.ga_result_beta[ii], "beta_std", ii)}'
+                        f'{btag}   [stretched]')
+            lines.append(txt)
         if app.ga_has_inf:
             lines.append('  tau_inf  (offset component)')
         lines.append('')
-        lines.append(f"IRF t0   = {res['t0']:.4g} {app.t_unit_txt()}"
+        lines.append(f"IRF t0   = {pm(res['t0'], 't0_std')} {u}"
                      + (' (fixed)' if app.ga_t0_fixed else ''))
-        lines.append(f"IRF FWHM = {res['fwhm']:.4g} {app.t_unit_txt()}"
+        lines.append(f"IRF FWHM = {pm(res['fwhm'], 'fwhm_std')} {u}"
                      + (' (fixed)' if app.ga_fwhm_fixed else ''))
+        lines.append('')
+        lines.extend(ta_core.format_fit_stats(stats))
         lines.append('')
         lines.append(f'Compute device: {dev_desc}')
         self.txt_result.setPlainText('\n'.join(lines))

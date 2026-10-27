@@ -1199,6 +1199,140 @@ def _lsqminnorm(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     return X
 
 
+def varpro_stats(D: np.ndarray, A: np.ndarray, basis_fn, x,
+                 mask: np.ndarray, h: float = 1e-5) -> dict:
+    """Goodness of fit and 1σ errors of a VARPRO fit ``D ≈ A · C(x)ᵀ``.
+
+    ``D`` (M, N) data, ``A`` (M, k) amplitudes at the optimum,
+    ``basis_fn(x) -> C`` (N, k), ``x`` the free non-linear parameters in
+    optimiser space, ``mask`` (M, N) the cells the fit used.
+
+    Errors come from the asymptotic covariance ``s²·F⁻¹`` with
+    ``s² = RSS / dof``.  The non-linear block uses the Schur complement
+    ``S = Σᵢ Jᵢᵀ (I − Pᵢ) Jᵢ`` (``Jᵢ`` = ∂fitᵢ/∂x by central differences,
+    ``Pᵢ`` = projector onto trace i's basis columns), i.e. the amplitudes
+    are profiled out exactly as in the fit; amplitude variances follow
+    from the block inverse.  Returns rss, n_obs, n_par, dof, chi2_red,
+    rms, r2, adj_r2, aic, bic, r2_rows (M,), x_std (p,), A_std (M, k).
+    """
+    D = np.asarray(D, float)
+    A = np.asarray(A, float)
+    x = np.asarray(x, float).ravel()
+    M, N = D.shape
+    C = basis_fn(x)
+    k = C.shape[1]
+    p = x.size
+    m = np.asarray(mask, bool) & np.isfinite(D)
+    # Rows with ≤ k usable points are skipped by the solvers (A = 0):
+    # they carry no parameters and no information.
+    m[m.sum(axis=1) <= k] = False
+    rows = np.where(m.any(axis=1))[0]
+    R = np.where(m, D - A @ C.T, 0.0)
+    rss = float(np.sum(R ** 2))
+    n_obs = int(m.sum())
+    n_par = p + k * rows.size
+    dof = n_obs - n_par
+    s2 = rss / dof if dof > 0 else np.nan
+
+    Dm = np.where(m, D, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        tss = float(np.nansum((Dm - np.nanmean(Dm)) ** 2))
+        tss_rows = np.nansum((Dm - np.nanmean(Dm, axis=1, keepdims=True)) ** 2,
+                             axis=1)
+        r2_rows = np.where(tss_rows > 0,
+                           1.0 - np.sum(R ** 2, axis=1) / tss_rows, np.nan)
+    r2 = 1.0 - rss / tss if tss > 0 else np.nan
+    adj_r2 = (1.0 - (1.0 - r2) * (n_obs - 1) / dof) if dof > 0 else np.nan
+    if n_obs > 0 and rss > 0:
+        ll = n_obs * np.log(rss / n_obs)
+        aic, bic = ll + 2 * n_par, ll + n_par * np.log(n_obs)
+    else:
+        aic = bic = np.nan
+
+    # ∂fit/∂x_j with A held fixed, (p, M, N)
+    J = np.zeros((p, M, N))
+    for j in range(p):
+        step = h * max(1.0, abs(x[j]))
+        xp, xm = x.copy(), x.copy()
+        xp[j] += step
+        xm[j] -= step
+        J[j] = A @ ((basis_fn(xp) - basis_fn(xm)) / (2 * step)).T
+
+    S = np.zeros((p, p))
+    A_std = np.full((M, k), np.nan)
+    B, G = {}, {}
+    for i in rows:
+        Ci = C[m[i]]
+        Ji = J[:, i, m[i]].T                       # (n_i, p)
+        Gi = np.linalg.pinv(Ci.T @ Ci)
+        Bi = Ci.T @ Ji                             # (k, p)
+        S += Ji.T @ Ji - Bi.T @ Gi @ Bi
+        B[i], G[i] = Bi, Gi
+    S_inv = np.linalg.pinv(S) if p else S
+    x_std = np.sqrt(np.clip(s2 * np.diag(S_inv), 0, None)) if p else np.zeros(0)
+    for i in rows:
+        Gi, Bi = G[i], B[i]
+        var = np.diag(Gi + Gi @ Bi @ S_inv @ Bi.T @ Gi) if p else np.diag(Gi)
+        A_std[i] = np.sqrt(np.clip(s2 * var, 0, None))
+
+    return {'rss': rss, 'n_obs': n_obs, 'n_par': n_par, 'dof': dof,
+            'chi2_red': s2,
+            'rms': float(np.sqrt(rss / n_obs)) if n_obs else np.nan,
+            'r2': r2, 'adj_r2': adj_r2, 'aic': aic, 'bic': bic,
+            'r2_rows': r2_rows, 'x_std': x_std, 'A_std': A_std}
+
+
+def nl_param_std(x, x_std, n_nl: int, idx_free_tau, idx_free_beta,
+                 t0_free: bool, fwhm_free: bool) -> dict:
+    """Map optimiser-space 1σ errors (log τ, log β, t₀, log FWHM — the
+    packing shared by the fit routines) to parameter space via the
+    delta method.  Fixed parameters get NaN."""
+    x = np.asarray(x, float).ravel()
+    tau_std = np.full(n_nl, np.nan)
+    beta_std = np.full(n_nl, np.nan)
+    i = 0
+    for j in idx_free_tau:
+        tau_std[j] = np.exp(x[i]) * x_std[i]
+        i += 1
+    for j in idx_free_beta:
+        beta_std[j] = np.exp(x[i]) * x_std[i]
+        i += 1
+    t0_std = np.nan
+    if t0_free:
+        t0_std = float(x_std[i])
+        i += 1
+    fwhm_std = float(np.exp(x[i]) * x_std[i]) if fwhm_free else np.nan
+    return {'tau_std': tau_std, 'beta_std': beta_std,
+            't0_std': t0_std, 'fwhm_std': fwhm_std}
+
+
+def format_fit_stats(stats) -> list:
+    """Text lines summarising :func:`varpro_stats` for the result panes."""
+    if stats is None:
+        return ['Fit statistics: not available']
+    return [
+        'Fit statistics:',
+        f"  R²            = {stats['r2']:.6f}",
+        f"  Adjusted R²   = {stats['adj_r2']:.6f}",
+        f"  Reduced χ²    = {stats['chi2_red']:.4g}",
+        f"  RSS           = {stats['rss']:.4g}",
+        f"  RMS residual  = {stats['rms']:.4g}",
+        f"  AIC / BIC     = {stats['aic']:.5g} / {stats['bic']:.5g}",
+        f"  N points = {stats['n_obs']},  parameters = {stats['n_par']},"
+        f"  dof = {stats['dof']}",
+        u'  (σ: asymptotic 1σ from the covariance matrix)',
+    ]
+
+
+def population_ratio(A) -> np.ndarray:
+    """|Aᵢ| / Σⱼ|Aⱼ| × 100 along the last axis (NaN when all are zero)."""
+    a = np.abs(np.asarray(A, float))
+    tot = a.sum(axis=-1, keepdims=True)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(tot > 0, 100.0 * a / tot, np.nan)
+
+
 class GlobalAnalysisStopped(Exception):
     """Raised from inside the GA objective when the caller-supplied
     ``stop_check`` reports that the user cancelled the fit.
@@ -1216,7 +1350,7 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                         beta_init=None, beta_fixed=None, stretch_on=None,
                         irf_mode: str = 'numerical',
                         backend=None, stop_check=None,
-                        method: str = 'trf'):
+                        method: str = 'trf', compute_stats: bool = True):
     """VARPRO global fit.
 
     Nonlinear params (tau, beta, t0, FWHM) via Nelder-Mead; amplitudes A
@@ -1257,6 +1391,11 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                    minimisation).  Kept as a fallback for datasets
                    where the loss surface has sharp discontinuities
                    TRF struggles with (rare).
+
+    ``compute_stats`` (default True): add ``info['stats']`` — goodness
+    of fit and 1σ errors from :func:`varpro_stats` (``tau_std``,
+    ``beta_std``, ``t0_std``, ``fwhm_std``, ``A_std`` …).  ``None`` if the
+    statistics could not be computed; the fit itself is unaffected.
 
     Returns dict with keys:
         tau, beta, t0, fwhm, A (M x k), fit (M x N), info, stretch_on
@@ -1434,7 +1573,8 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
     if x0.size == 0:
         # All nonlinear params are fixed → linear-only problem, one
         # objective call suffices.
-        loss, A_out, fit_out = objective(np.array([]))
+        x_opt = np.array([])
+        loss, A_out, fit_out = objective(x_opt)
         iters = 0
         n_fev = 1
         init_loss = loss
@@ -1476,7 +1616,8 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                 max_nfev=5000)
         except GlobalAnalysisStopped:
             raise
-        loss, A_out, fit_out = objective(res.x)
+        x_opt = res.x
+        loss, A_out, fit_out = objective(x_opt)
         iters = int(getattr(res, 'nfev', 0))
         n_fev = int(getattr(res, 'nfev', 0))
     else:
@@ -1486,9 +1627,47 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                        options={'xatol': 1e-8, 'fatol': 1e-10,
                                 'maxiter': 5000, 'maxfev': 20000,
                                 'disp': False})
-        loss, A_out, fit_out = objective(res.x)
+        x_opt = res.x
+        loss, A_out, fit_out = objective(x_opt)
         iters = int(res.nit)
         n_fev = int(getattr(res, 'nfev', iters))
+
+    stats = None
+    if compute_stats and loss < 1e29:
+        tau_opt, beta_opt = tau_cur.copy(), beta_cur.copy()
+        t0_opt, fwhm_opt = t0_cur, fwhm_cur
+
+        def basis_at(x):
+            if stop_check is not None and stop_check():
+                raise GlobalAnalysisStopped()
+            tau_v, beta_v = tau_opt.copy(), beta_opt.copy()
+            t0_v, fwhm_v = t0_opt, fwhm_opt
+            i = 0
+            for j in idx_free_tau:
+                tau_v[j] = np.exp(x[i]); i += 1
+            for j in idx_free_beta:
+                beta_v[j] = np.exp(x[i]); i += 1
+            if not t0_fixed:
+                t0_v = float(x[i]); i += 1
+            if not fwhm_fixed:
+                fwhm_v = float(np.exp(x[i]))
+            return build_basis_local(tau_v, beta_v, t0_v, fwhm_v)
+
+        cell_mask = np.ones((M, N), dtype=bool)
+        if skip_mask_active:
+            sig = fwhm_opt / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            cm = t_arr > (t0_opt + 3.0 * sig)
+            if int(cm.sum()) > n_nl + (1 if has_inf else 0):
+                cell_mask[:, ~cm] = False
+        try:
+            stats = varpro_stats(D, A_out, basis_at, x_opt, cell_mask)
+            stats.update(nl_param_std(
+                x_opt, stats['x_std'], n_nl, idx_free_tau, idx_free_beta,
+                not t0_fixed, not fwhm_fixed))
+        except GlobalAnalysisStopped:
+            raise
+        except Exception:
+            stats = None
 
     info = {
         'rss': loss,
@@ -1499,6 +1678,7 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
         'initialLoss': init_loss,
         'initialRMS': float(np.sqrt(init_loss / D.size)),
         'irf_mode': irf_mode if any_stretched else 'closed-form',
+        'stats': stats,
     }
     return {
         'tau': tau_cur.copy(),
@@ -1750,13 +1930,41 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
                        options={'xatol': 1e-8, 'fatol': 1e-10,
                                 'maxiter': 5000, 'maxfev': 20000,
                                 'disp': False})
-        A_final, fit_v = unpack(res.x)
+        x_opt = res.x
+        A_final, fit_v = unpack(x_opt)
         iters = int(res.nit)
         fval = float(res.fun)
     else:
-        A_final, fit_v = unpack(np.array([]))
+        x_opt = np.array([])
+        A_final, fit_v = unpack(x_opt)
         iters = 0
         fval = float(np.sum(((y - fit_v)[mask]) ** 2))
+
+    # Statistics / 1σ errors at the optimum (same packing as ``unpack``)
+    opt = {key: (v.copy() if isinstance(v, np.ndarray) else v)
+           for key, v in cur.items()}
+
+    def basis_at(x):
+        unpack(x)
+        M_ = np.zeros((t.size, n_cols))
+        for j in range(n_nl):
+            M_[:, j] = (stretched_irf_conv(t, cur['tau'][j], cur['beta'][j],
+                                           cur['t0'], cur['fwhm'], irf_mode)
+                        if stretch_on[j] else
+                        exp_irf_conv(t, cur['tau'][j], cur['t0'], cur['fwhm']))
+        if has_inf:
+            M_[:, -1] = exp_irf_conv(t, np.inf, cur['t0'], cur['fwhm'])
+        return M_
+
+    try:
+        stats = varpro_stats(y[None, :], A_final[None, :], basis_at, x_opt,
+                             mask[None, :])
+        stats.update(nl_param_std(
+            x_opt, stats['x_std'], n_nl, free_tau_idx, free_beta_idx,
+            not t0_fixed, not fwhm_fixed))
+    except Exception:
+        stats = None
+    cur.update(opt)
 
     res_v = y - fit_v
     res_v[~mask] = np.nan
@@ -1771,7 +1979,7 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
         'fit': fit_v,
         'residual': res_v,
         'info': {'iters': iters, 'fval': fval, 'rms': rms,
-                 'mask': mask, 'irf_mode': irf_mode},
+                 'mask': mask, 'irf_mode': irf_mode, 'stats': stats},
     }
 
 

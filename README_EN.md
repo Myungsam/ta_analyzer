@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.3.0** (latest) | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
+| **v1.4.0** (latest) | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
+| v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Wavelength resampling (Average / Decimate) in Crop Data, Korean/English user guide |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Version before resampling |
@@ -30,7 +31,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.3.0      # latest (same as main)
+git checkout v1.4.0      # latest (same as main)
+git checkout v1.3.0      # before fit statistics / pin import
 git checkout v1.2.0      # before Integrate
 git checkout v1.1.0      # before moving average
 git checkout v1.0.0      # before resampling
@@ -132,9 +134,9 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 ### 5.4 Analysis
 | Menu | Description |
 |---|---|
-| **Global Analysis** | Fits a sum of exponentials ⊗ Gaussian IRF to the whole matrix (fixed τ, stretched β, τ=∞ component, fit window). Results: τ, DADS, EADS, fit, residual. GPU selectable when TensorFlow is installed |
+| **Global Analysis** | Fits a sum of exponentials ⊗ Gaussian IRF to the whole matrix (fixed τ, stretched β, τ=∞ component, fit window). Results: τ ± σ, DADS, EADS, fit, residual, fit statistics (section 5.7). GPU selectable when TensorFlow is installed |
 | **SVD** | Singular value spectrum, U/V vectors, rank-N reconstruction and residual |
-| **Kinetic Fit** | Fits one wavelength (or a wavelength-window average) with multi-exp ⊗ IRF |
+| **Kinetic Fit** | Fits one wavelength (or a wavelength-window average), or several kinetics pinned in the main window, with multi-exp ⊗ IRF (global fit for several). τ and A ± σ, population ratio, fit statistics (section 5.7) |
 | **LDA** | Tikhonov-regularized lifetime density map, L-curve for choosing α |
 | **MCR-ALS** | Decomposes into pure spectra S(λ) and concentration profiles C(t) |
 | **Coherence** | 2D \|FFT\|² map of the residual (cm⁻¹/THz), LPSVD mode decomposition |
@@ -160,6 +162,27 @@ Checking **Integrate** on the row below the Spectrum or Kinetics panel draws the
 - The indicator box on the right shows the window actually averaged, its center and the point count (e.g. `idx 95–103 (24.47–38.63 ps) · center 30.75 ps · 9 pts`, `640.1–659.9 nm · center 650.0 nm · 62 pts`); `off` when unchecked.
 - **Pin** while checked stores the window with that pin; pinning while unchecked gives a single trace as before. Re-pinning the same delay/λ replaces its window.
 - ±idx = 0, or a BW narrower than the pixel spacing, equals a single trace. The data itself is not changed; only the display and Export pins use the window.
+
+### 5.7 Fit statistics and Kinetic Fit import (v1.4.0)
+
+![Kinetic Fit global](docs/images/kfit_global.png)
+
+The **Global Analysis result pane** now shows:
+- The standard deviation of each time constant: `tau_1 = 2.997 ± 0.0046 ps`. β, IRF t₀ and FWHM also get ± σ when free; fixed values are marked `(fixed)`.
+- A **Fit statistics** block: R², adjusted R², reduced χ², RSS, RMS residual, AIC / BIC, number of points, parameters and degrees of freedom
+
+σ is the asymptotic 1σ standard error from the covariance matrix built from the Jacobian at the optimum. The amplitudes (DADS) are re-solved for every τ, so the τ errors already include the amplitude uncertainty. A σ larger than τ itself means the data do not determine that component (use fewer components).
+
+**Kinetic Fit window** (More Analysis → Kinetic Fit)
+- Data enter only when **Import** is pressed. The window opens empty; after changing λ / half-width or the main-window pins, press Import again.
+- **Import pinned kinetics** checkbox (checked on opening when the main window has pinned kinetics)
+  - Checked: import every trace pinned in the main Kinetics panel. Pins taken with Integrate BW keep their band average.
+  - Unchecked, or no pins: import a single Centre λ ± half-width trace as before.
+- Two or more traces are fitted **globally** (τ, β, t₀ and FWHM shared, amplitudes per trace); a single trace gets a **single fit**.
+- Results: τ ± σ, A ± σ for each trace with its **population ratio** `|Aᵢ| / Σ|Aⱼ| × 100 %` (including A∞ when the τ=∞ offset is on), R² per trace, and the same fit statistics block
+- Export: Params (CSV) includes σ, ratios and statistics (`T1_`, `T2_` … prefixes for a global fit); Trace+Fit writes data/fit/residual columns per trace; Save Residual writes one `kfit_{λ}nm_<name>.csv` file per trace (the Coherence window recognises the λ).
+
+![Global Analysis statistics](docs/images/ga_stats.png)
 
 ## 6. Input file formats
 
@@ -197,13 +220,20 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   python test/test_crop_resample.py
   python test/test_crop_moving_average.py
   python test/test_pin_gating.py
+  python test/test_fit_stats_kfit_import.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving,gating` selects a subset)
+- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving,gating,kfit,ga` selects a subset)
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.4.0** (2026-10-27)
+- Global Analysis: 1σ standard deviations of τ, β, t₀ and FWHM, plus fit statistics (R², adjusted R², reduced χ², RSS, RMS, AIC/BIC, degrees of freedom)
+- Kinetic Fit: **Import** button and **Import pinned kinetics** checkbox; pinned kinetics are fitted globally (shared τ), a single trace gets a single fit
+- Kinetic Fit: τ and A ± σ, population ratio |Aᵢ|/Σ|Aⱼ| (%), R² per trace, fit statistics; exports include σ, ratios and statistics
+- Kinetic Fit data enter only on Import (editing λ no longer redraws automatically)
 
 **v1.3.0** (2026-10-27)
 - Spectrum panel **Integrate ±idx**: spectrum averaged over a delay-index window; legend shows the window delays' mean ± std

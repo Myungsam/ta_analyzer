@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.3.0** (최신) | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
+| **v1.4.0** (최신) | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
+| v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Crop Data에 파장축 Resampling(Average / Decimate) 추가, 한/영 사용 설명서 |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Resampling 이전 버전 |
@@ -30,7 +31,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.3.0      # 최신 버전 (main과 같음)
+git checkout v1.4.0      # 최신 버전 (main과 같음)
+git checkout v1.3.0      # fit 통계·pin import 이전
 git checkout v1.2.0      # 구간 평균(Integrate) 이전
 git checkout v1.1.0      # Moving average 이전
 git checkout v1.0.0      # Resampling 이전
@@ -132,9 +134,9 @@ python ta_main.py
 ### 5.4 분석
 | 메뉴 | 내용 |
 |---|---|
-| **Global Analysis** | 여러 지수 함수 ⊗ Gaussian IRF를 전체 행렬에 피팅합니다(τ 고정, stretched β, τ=∞ 성분, 피팅 구간 지정). 결과: τ, DADS, EADS, fit, residual. TensorFlow가 있으면 GPU 선택 가능 |
+| **Global Analysis** | 여러 지수 함수 ⊗ Gaussian IRF를 전체 행렬에 피팅합니다(τ 고정, stretched β, τ=∞ 성분, 피팅 구간 지정). 결과: τ ± σ, DADS, EADS, fit, residual, fit 통계(5.7절). TensorFlow가 있으면 GPU 선택 가능 |
 | **SVD** | 특이값 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
-| **Kinetic Fit** | 한 파장(또는 파장 구간 평균)의 trace를 multi-exp ⊗ IRF로 피팅 |
+| **Kinetic Fit** | 한 파장(또는 파장 구간 평균) trace, 또는 main 창에서 pin한 kinetics 여러 개를 multi-exp ⊗ IRF로 피팅(여러 개면 global fit). τ·A ± σ, population ratio, fit 통계(5.7절) |
 | **LDA** | Tikhonov 정규화 lifetime density 맵, L-curve로 α 선택 |
 | **MCR-ALS** | 순수 스펙트럼 S(λ)와 농도 프로파일 C(t)로 분해 |
 | **Coherence** | residual의 2D \|FFT\|² 맵(cm⁻¹/THz), LPSVD 모드 분해 |
@@ -160,6 +162,27 @@ Spectrum과 Kinetics 패널 아랫줄의 **Integrate** 체크박스를 켜면 �
 - 오른쪽 표시창(indicator)에 실제로 평균한 구간, 중심값, 점 수가 나옵니다(예: `idx 95–103 (24.47–38.63 ps) · center 30.75 ps · 9 pts`, `640.1–659.9 nm · center 650.0 nm · 62 pts`). 꺼져 있으면 `off`.
 - 체크한 상태에서 **Pin**하면 그 pin은 당시 구간을 기억합니다. 체크를 끄고 pin하면 기존처럼 한 점 trace입니다. 같은 delay/λ를 다시 pin하면 구간이 새 값으로 바뀝니다.
 - ±idx = 0 또는 BW가 픽셀 간격보다 작으면 한 점과 같습니다. 데이터 자체는 바꾸지 않으며, 보기와 Export pins에만 적용됩니다.
+
+### 5.7 Fit 통계와 Kinetic Fit Import (v1.4.0)
+
+![Kinetic Fit global](docs/images/kfit_global.png)
+
+**Global Analysis 결과 창**에 다음이 추가됩니다.
+- 각 time constant의 표준편차: `tau_1 = 2.997 ± 0.0046 ps`. β, IRF t₀, FWHM도 자유 변수이면 ± σ가 붙고, 고정값은 `(fixed)`로 표시됩니다.
+- **Fit statistics** 블록: R², Adjusted R², Reduced χ², RSS, RMS residual, AIC / BIC, 데이터 점 수·파라미터 수·자유도
+
+σ는 최적점의 Jacobian으로 만든 공분산 행렬의 1σ(점근 표준오차)입니다. 진폭(DADS)은 τ마다 다시 풀리므로, τ의 σ에는 진폭 불확실성이 이미 반영됩니다. 값이 τ보다 크게 나오면 그 성분이 데이터로 결정되지 않는다는 뜻입니다(성분 수를 줄이세요).
+
+**Kinetic Fit 창**(More Analysis → Kinetic Fit)
+- 데이터는 **Import** 버튼을 눌렀을 때만 들어옵니다. 창을 연 직후에는 비어 있고, λ·half-width나 main 창 pin을 바꾼 뒤에는 Import를 다시 눌러야 반영됩니다.
+- **Import pinned kinetics** 체크박스(main 창에 pin된 kinetics가 있으면 처음부터 켜져 있음)
+  - 켜짐: main 창 Kinetics 패널에 pin한 trace를 모두 가져옵니다. Integrate BW로 pin한 trace는 그 대역 평균 그대로입니다.
+  - 꺼짐 또는 pin 없음: 기존처럼 Centre λ ± half-width의 trace 하나를 가져옵니다.
+- trace가 2개 이상이면 **global fit**(모든 trace가 τ, β, t₀, FWHM 공유, 진폭은 trace마다), 1개면 **단일 fit**을 합니다.
+- 결과: τ ± σ, trace별 A ± σ와 **population ratio** `|Aᵢ| / Σ|Aⱼ| × 100 %`(τ=∞ offset을 켰다면 A∞ 포함), trace별 R², 위와 같은 Fit statistics
+- Export: Params(CSV)에 σ·비율·통계가 들어가고(global이면 `T1_`, `T2_` … 접두사), Trace+Fit은 trace별 data/fit/residual 열, Save Residual은 trace마다 `kfit_{λ}nm_<이름>.csv` 파일을 하나씩 씁니다(Coherence 창에서 λ가 인식됨).
+
+![Global Analysis statistics](docs/images/ga_stats.png)
 
 ## 6. 입력 파일 형식
 
@@ -197,13 +220,20 @@ corner, t1, t2, ..., tN
   python test/test_crop_resample.py
   python test/test_crop_moving_average.py
   python test/test_pin_gating.py
+  python test/test_fit_stats_kfit_import.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving,gating`으로 일부만 가능)
+- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving,gating,kfit,ga`로 일부만 가능)
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.4.0** (2026-10-27)
+- Global Analysis: τ·β·t₀·FWHM의 1σ 표준편차와 Fit statistics(R², Adjusted R², Reduced χ², RSS, RMS, AIC/BIC, 자유도) 표시
+- Kinetic Fit: **Import** 버튼과 **Import pinned kinetics** 체크박스. pin한 kinetics를 가져와 global fit(τ 공유), 1개면 단일 fit
+- Kinetic Fit: τ·A ± σ, population ratio |Aᵢ|/Σ|Aⱼ| (%), trace별 R², fit 통계, 내보내기에 σ·비율·통계 포함
+- Kinetic Fit 데이터는 Import를 눌렀을 때만 반입(λ 입력을 바꿔도 자동으로 다시 그리지 않음)
 
 **v1.3.0** (2026-10-27)
 - Spectrum 패널에 **Integrate ±idx**: delay index 구간 평균 스펙트럼, legend에 구간 delay 평균 ± 표준편차

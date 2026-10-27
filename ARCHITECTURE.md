@@ -52,8 +52,8 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 
 | 계층 | 모듈 | 줄 수 | 역할 |
 |---|---|---:|---|
-| **Entry / Shell** | `ta_main.py` | 3,368 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
-| **Numerical core** | `ta_core.py` | 2,168 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
+| **Entry / Shell** | `ta_main.py` | 3,373 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
+| **Numerical core** | `ta_core.py` | 2,371 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), fit 통계·1σ(`varpro_stats`, `nl_param_std`, `format_fit_stats`, `population_ratio`), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
 | | `ta_lpsvd.py` | 525 | LPSVD(Lorentzian)와 Gaussian 감쇠 진동자 모드 분해 (1D 시계열) |
 | **Infra / Service** | `ta_residual_store.py` | 369 | GA/LDA residual을 `residuals/*.xlsx`로 저장하고, 목록 조회·로드 (CSV도 로드 가능) |
 | | `ta_device.py` | 725 | TensorFlow 장치 목록, `TFBackend`(lstsq/matmul), GPU 상태(pynvml/nvidia-smi), 팬 제어, keep-warm 스레드, 관리자 권한 재실행 |
@@ -64,9 +64,9 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | **Correction dialogs** | `ta_dialogs_a.py` | 1,808 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
 | | `ta_chirp.py` | 446 | `ChirpDialog`: 클릭 또는 ridge 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
-| **Analysis dialogs** | `ta_ga.py` | 1,888 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
+| **Analysis dialogs** | `ta_ga.py` | 1,900 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
 | | `ta_svd.py` | 419 | `SVDDialog`: σ 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
-| | `ta_kfit.py` | 523 | `KineticFitDialog`: 단일 λ(또는 λ 창 평균) trace 피팅 |
+| | `ta_kfit.py` | 690 | `KineticFitDialog`: Import 버튼으로 trace 반입(main 창 pin된 kinetics 또는 단일 λ/λ 창 평균). 여러 개면 global fit, 1개면 단일 fit. σ, population ratio, fit 통계 |
 | | `ta_lda.py` | 471 | `LDADialog`: Tikhonov 정규화 lifetime density, L-curve |
 | | `ta_mcr.py` | 355 | `MCRDialog`: MCR-ALS (non-negativity, unimodality) |
 | | `ta_coherence.py` | 1,079 | `CoherenceDialog`: 탭 ① residual의 2D \|FFT\|² 맵, 탭 ② LPSVD/Gaussian 모드 분해 |
@@ -234,7 +234,8 @@ deltaA  ──► 2D map / Spectrum / Kinetics / 모든 분석
   - 선택: τ=∞ offset 성분(step response).
 - **VARPRO**: 비선형 파라미터(log τ, log β, t₀, log FWHM)는 `least_squares(method='trf')`로 최적화합니다. 기본값이며 `'nm'`을 고르면 Nelder-Mead를 씁니다. 진폭 A는 매 반복마다 선형 최소제곱(`lstsq`)으로 바로 풉니다. Fixed 플래그로 파라미터를 고정할 수 있습니다.
 - **Fit window**: `ga_t_min`~`ga_t_max`로 delay를 잘라 피팅합니다. 필요한 최소 점 수는 3 + N_τ (+1)입니다. 결과는 잘린 축(`ga_result_delay`) 기준으로 저장합니다.
-- **출력**: τ, β, t₀, FWHM, RMS, **DADS**(= A), **EADS**(`compute_eads_from_dads`, 순차 모델), fit 맵, residual 맵, 클릭한 λ의 kinetics.
+- **통계**: `fit_global_analysis(..., compute_stats=True)`가 `info['stats']`를 채웁니다. `varpro_stats`가 최적점에서 ∂fit/∂x(중앙차분)로 Schur complement S = Σᵢ Jᵢᵀ(I−Pᵢ)Jᵢ를 만들어 진폭을 profile out한 비선형 파라미터 공분산 s²S⁻¹을 구하고(s² = RSS/dof), block inverse로 진폭 σ도 계산합니다. `nl_param_std`가 log 공간 σ를 delta method로 τ·β·FWHM σ로 바꿉니다. R², adj. R², χ²_red, AIC/BIC, trace별 R²도 함께 반환합니다. 결과 창은 `format_fit_stats`로 표시하고 `app.ga_result_stats`에 보관합니다.
+- **출력**: τ ± σ, β, t₀, FWHM, RMS, **DADS**(= A), **EADS**(`compute_eads_from_dads`, 순차 모델), fit 맵, residual 맵, 클릭한 λ의 kinetics.
 - **장치 가속** (`ta_device`): TensorFlow가 있으면 CPU/GPU 목록을 보여 줍니다. `TFBackend.lstsq/matmul`로 핫 커널을 해당 장치에서 실행합니다. GPU 상태(온도, 사용률, 팬)는 1 Hz로 갱신하고, 팬 속도 강제와 keep-warm 스레드, 관리자 권한 재실행 기능이 있습니다. TF가 없으면 NumPy로 동작합니다.
 - **Stop**: `stop_check` 콜백을 objective에서 확인하고, 중단되면 `GlobalAnalysisStopped` 예외를 던집니다.
 - **Save residual**: `ta_residual_store.save_residual_2d('GA', ...)` → `residuals/GA_<dataset>_<ts>.xlsx`.
@@ -242,8 +243,8 @@ deltaA  ──► 2D map / Spectrum / Kinetics / 모든 분석
 ### 5.2 SVD (`ta_svd.py`)
 NaN을 0으로 바꾼 뒤 `np.linalg.svd`를 계산합니다. σ 스펙트럼(log), U(λ)/V(t) 앞쪽 k개, rank-N 재구성과 residual 맵을 보여 줍니다. U/S/V와 재구성 결과를 CSV/xlsx로 내보냅니다.
 
-### 5.3 Kinetic Fit (`ta_kfit.py` → `fit_single_trace`)
-단일 λ 또는 λ 창 평균 trace를 multi-exp(+stretched β) ⊗ IRF로 피팅합니다. 결과로 trace, 파라미터, residual CSV(`kfit_<λ>nm_residual.csv`, Coherence에서 불러올 수 있음)를 저장합니다.
+### 5.3 Kinetic Fit (`ta_kfit.py` → `fit_single_trace` / `fit_global_analysis`)
+데이터는 **Import** 버튼(`do_import`)으로만 들어옵니다. **Import pinned kinetics**가 켜져 있고 main 창에 pin이 있으면 `app.kinOverlays`의 trace를 `app._kin_trace(idx, kinOverlayBW)`로 가져오고, 아니면 Centre λ ± half-width trace 하나를 가져옵니다. trace 1개는 `fit_single_trace`, 여러 개는 `fit_global_analysis(method='trf')`(τ/β/t₀/FWHM 공유, 진폭은 trace별)로 피팅하고, 결과는 항상 (trace 수, …) 모양으로 정규화해 τ·A ± σ, `population_ratio`(|Aᵢ|/Σ|Aⱼ|, offset 포함), trace별 R², fit 통계를 보여 줍니다. multi-exp(+stretched β) ⊗ IRF 모델은 GA와 같습니다. 결과로 trace, 파라미터, residual CSV(`kfit_<λ>nm_residual.csv`, Coherence에서 불러올 수 있음)를 저장합니다.
 
 ### 5.4 LDA (`ta_lda.py` → `compute_lda`, `compute_lcurve`)
 log 간격의 고정 τ grid 위에서 Tikhonov 정규화(`l2` 또는 `l2deriv`) 선형 역문제를 풉니다. 출력은 A(λ, τ) lifetime density 맵과 재구성 결과입니다. L-curve로 α를 고르는 것을 도와줍니다. 결과는 `app._last_lda`에 캐시하고, residual은 `save_residual_2d('LDA')`로 저장합니다.

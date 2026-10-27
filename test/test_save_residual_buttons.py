@@ -112,6 +112,8 @@ def _check_kfit(win, folder):
     assert not kf.btn_save_resid.isEnabled(), \
         'Kfit save should start disabled'
     kf.ed_wl.setValue(500.0)
+    kf.cb_pinned.setChecked(False)
+    kf.do_import()
     kf.do_run()
     assert kf.btn_save_resid.isEnabled(), \
         'Kfit save should be enabled after Run'

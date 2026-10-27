@@ -64,7 +64,7 @@ def save(widget: QtWidgets.QWidget, name: str):
     print(f'wrote {path} ({pix.width()}x{pix.height()})')
 
 
-SCENES = ('main', 'crop', 'moving', 'gating')
+SCENES = ('main', 'crop', 'moving', 'gating', 'kfit', 'ga')
 
 
 def main(argv=None):
@@ -134,6 +134,46 @@ def main(argv=None):
         win.chk_kin_int.setChecked(True)
         win.set_sel_wl(650.0)
         save(win, 'pin_gating.png')
+
+    if 'kfit' in scenes:
+        # Global kinetic fit of three pinned traces (one BW-integrated).
+        import ta_kfit
+        win.set_loaded_data(wl, t, A, 'Loaded: synthetic_TA.csv')
+        for lam in (520.0, 610.0):
+            win.set_sel_wl(lam)
+            win.pin_kin()
+        win.ed_kin_int_bw.setValue(10.0)
+        win.chk_kin_int.setChecked(True)
+        win.set_sel_wl(650.0)
+        win.pin_kin()
+        kd = ta_kfit.KineticFitDialog(win, win)
+        kd.resize(1400, 900)
+        kd.dd_N.setCurrentText('2')
+        for r, v in enumerate((2.0, 200.0)):
+            kd.tbl.item(r, 0).setText(str(v))
+        kd.ed_fw.setValue(0.16)
+        kd.do_import()
+        kd.do_run()
+        save(kd, 'kfit_global.png')
+        kd.close()
+        win.clear_kin_overlays()
+        win.chk_kin_int.setChecked(False)
+
+    if 'ga' in scenes:
+        import ta_ga
+        win.set_loaded_data(wl, t, A, 'Loaded: synthetic_TA.csv')
+        ga = ta_ga.GlobalAnalysisDialog(win, win)
+        ga.resize(1500, 950)
+        ga.dd_N.setCurrentText('3')
+        ga.tau_table.cellChanged.disconnect()
+        for r, v in enumerate((1.0, 50.0, 500.0)):
+            ga.tau_table.item(r, 0).setText(str(v))
+        ga.tau_table.cellChanged.connect(ga._on_tau_edit)
+        ga.read_table()
+        ga.do_run()
+        QtWidgets.QApplication.processEvents()
+        save(ga, 'ga_stats.png')
+        ga.close()
     win.close()
 
 

@@ -93,6 +93,8 @@ def main():
     assert kd is not None
     kd.ed_wl.setValue(450.0)
     kd.ed_wl_hw.setValue(0.0)
+    kd.cb_pinned.setChecked(False)
+    kd.do_import()                      # data enters only via Import
     kd.dd_N.setCurrentText('2')
     QtWidgets.QApplication.processEvents()
     # The KineticFitDialog table has live cellChanged wiring through

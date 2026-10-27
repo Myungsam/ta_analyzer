@@ -279,6 +279,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.ga_result_eads: np.ndarray | None = None
         self.ga_result_fit: np.ndarray | None = None
         self.ga_result_rms = float('nan')
+        self.ga_result_stats = None
         # Delay axis and ΔA matrix that the fit was actually run on
         # (slice of self.delay / self.deltaA when a t-window was set).
         # plot_maps / plot_kinetics / export use these so the fit result
@@ -2637,6 +2638,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.ga_result_eads = None
         self.ga_result_fit = None
         self.ga_result_rms = float('nan')
+        self.ga_result_stats = None
         self.ga_result_delay = None
         self.ga_result_data = None
         self.ga_result_t_window = None

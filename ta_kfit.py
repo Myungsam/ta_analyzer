@@ -1,9 +1,15 @@
 """
-TA Analyzer GUI - Single-Trace Kinetic Fit dialog.
+TA Analyzer GUI - Kinetic Fit dialog.
 
-Fits a single λ-cut of the 2D map (or an averaged window of cuts) to a
-sum of (possibly stretched) exponentials convolved with a Gaussian IRF.
-Uses ta_core.fit_single_trace.
+Fits kinetic traces to a sum of (possibly stretched) exponentials
+convolved with a Gaussian IRF.  Traces are brought in with **Import**:
+either the main window's pinned kinetics ("Import pinned kinetics") or,
+as before, one λ-cut (optionally averaged over ± half-width).
+
+One trace  → single-trace fit (ta_core.fit_single_trace).
+Several    → global fit with shared τ / β / t₀ / FWHM and per-trace
+             amplitudes (ta_core.fit_global_analysis).
+Both report 1σ errors, population ratios |Aᵢ| / Σ|Aⱼ| and fit statistics.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ import ta_core
 
 
 class KineticFitDialog(QtWidgets.QDialog):
-    """Fit a single kinetic trace y(t) at a chosen wavelength.
+    """Fit one kinetic trace y(t), or several globally.
 
     Supports an arbitrary mix of standard- and stretched-exponential
     components plus an optional offset (τ = ∞).
@@ -29,7 +35,7 @@ class KineticFitDialog(QtWidgets.QDialog):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
-        self.setWindowTitle('Kinetic Fit (single trace)')
+        self.setWindowTitle('Kinetic Fit')
         self.resize(1180, 760)
 
         outer = QtWidgets.QHBoxLayout(self)
@@ -58,6 +64,27 @@ class KineticFitDialog(QtWidgets.QDialog):
             'Copy the main window crosshair wavelength here.')
         row_wl.addWidget(self.btn_use_main)
         lL.addLayout(row_wl)
+
+        # Import: pinned kinetics (global fit) or the λ window above
+        row_imp = QtWidgets.QHBoxLayout()
+        self.btn_import = QtWidgets.QPushButton('Import')
+        style_button(self.btn_import, bg='#4c8cca', fg='white')
+        self.btn_import.setToolTip(
+            'Load the trace(s) to fit.  Changes to λ / half-width or to '
+            'the main-window pins take effect on the next Import.')
+        row_imp.addWidget(self.btn_import)
+        self.cb_pinned = QtWidgets.QCheckBox('Import pinned kinetics')
+        self.cb_pinned.setToolTip(
+            'Checked: import every kinetics pinned in the main window '
+            '(Integrate BW pins keep their band) and fit them globally.\n'
+            'Unchecked, or no pins: import the λ ± half-width trace above.')
+        self.cb_pinned.setChecked(bool(app.kinOverlays))
+        row_imp.addWidget(self.cb_pinned)
+        row_imp.addStretch(1)
+        lL.addLayout(row_imp)
+        self.lbl_import = QtWidgets.QLabel('No data imported — press Import.')
+        self.lbl_import.setWordWrap(True)
+        lL.addWidget(self.lbl_import)
 
         # Number of components + has_inf
         row_n = QtWidgets.QHBoxLayout()
@@ -124,9 +151,9 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.btn_reset = QtWidgets.QPushButton('Reset')
         self.btn_save_resid = QtWidgets.QPushButton('Save Residual')
         self.btn_save_resid.setToolTip(
-            'Write the current single-trace residual (data − fit) to '
-            'the residuals folder so it can be re-loaded later from '
-            'the Coherence dialog for LPSVD analysis.')
+            'Write the residual (data − fit) as a two-column CSV — one '
+            'file per trace for a global fit — so it can be re-loaded '
+            'later from the Coherence dialog for LPSVD analysis.')
         self.btn_save_resid.setEnabled(False)
         ar.addWidget(self.btn_run); ar.addWidget(self.btn_reset)
         ar.addWidget(self.btn_save_resid)
@@ -170,7 +197,9 @@ class KineticFitDialog(QtWidgets.QDialog):
         outer.addWidget(right, stretch=1)
 
         # State
-        self._last_fit = None  # dict from ta_core.fit_single_trace
+        self._t = None         # delay axis of the imported traces
+        self._traces = []      # [{'label', 'wl', 'y', 'n_avg'}, ...]
+        self._last_fit = None  # normalised fit result, see do_run
 
         # Wiring
         self.dd_N.currentTextChanged.connect(self._on_n_change)
@@ -178,17 +207,16 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.btn_use_main.clicked.connect(
             lambda: self.ed_wl.setValue(float(self.app.selWL)))
         self.btn_t_full.clicked.connect(self._set_t_full)
+        self.btn_import.clicked.connect(self.do_import)
         self.btn_run.clicked.connect(self.do_run)
         self.btn_reset.clicked.connect(self.do_reset)
         self.btn_exp_trace.clicked.connect(self._export_trace)
         self.btn_exp_param.clicked.connect(self._export_params)
         self.btn_save_resid.clicked.connect(self.save_residual)
         self.dd_scale.currentTextChanged.connect(lambda _: self._refresh_plot())
-        for ed in (self.ed_wl, self.ed_wl_hw):
-            ed.valueChanged.connect(lambda _: self._refresh_plot(replot_data=True))
 
         self._populate_table(2)
-        self._refresh_plot(replot_data=True)
+        self._refresh_plot()
 
     def closeEvent(self, ev):
         self.app.kfit_fig = None
@@ -257,7 +285,7 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.ed_t_max.setValue(float(self.app.delay[-1]))
 
     def _get_trace(self):
-        """Return (t, y, wl_actual, n_avg) — the trace to fit/plot."""
+        """Return (t, y, wl_actual, n_avg) for the λ ± half-width inputs."""
         app = self.app
         wl = float(self.ed_wl.value())
         hw = float(self.ed_wl_hw.value())
@@ -274,6 +302,49 @@ class KineticFitDialog(QtWidgets.QDialog):
         wl_centre = float(np.mean(app.wavelength[m]))
         return app.delay.copy(), y_avg, wl_centre, int(m.sum())
 
+    def _pinned_traces(self):
+        """Main-window pinned kinetics, each with its stored BW band."""
+        app = self.app
+        out = []
+        for w in app.kinOverlays:
+            i = int(np.argmin(np.abs(app.wavelength - w)))
+            bw = app.kinOverlayBW.get(w, 0.0)
+            y, label = app._kin_trace(i, bw)
+            n = (int(ta_core.wavelength_gate(
+                app.wavelength, app.wavelength[i], bw).sum()) if bw > 0
+                 else 1)
+            out.append({'label': label, 'wl': float(app.wavelength[i]),
+                        'y': np.asarray(y, float).copy(), 'n_avg': n})
+        return out
+
+    # ----------------- Import -----------------
+    def do_import(self):
+        """Load the traces to fit (pinned kinetics or the λ window)."""
+        app = self.app
+        if app.deltaA is None:
+            warn_box(self, 'No data', 'Load data in the main window first.')
+            return
+        note = ''
+        if self.cb_pinned.isChecked() and app.kinOverlays:
+            traces = self._pinned_traces()
+            src = 'pinned kinetics'
+        else:
+            _, y, wl, n = self._get_trace()
+            label = f'λ = {wl:.2f} nm' + (f' (avg {n} px)' if n > 1 else '')
+            traces = [{'label': label, 'wl': wl, 'y': y, 'n_avg': n}]
+            src = 'λ window'
+            if self.cb_pinned.isChecked():
+                note = '  (no pinned kinetics in the main window)'
+        self._t = app.delay.copy()
+        self._traces = traces
+        self._last_fit = None
+        self.btn_save_resid.setEnabled(False)
+        kind = 'global fit' if len(traces) > 1 else 'single-trace fit'
+        self.lbl_import.setText(
+            f'{len(traces)} trace(s) from {src} → {kind}{note}')
+        self.lbl_status.setText('Data imported.')
+        self._refresh_plot()
+
     # ----------------- Run / Reset -----------------
     def do_reset(self):
         self.dd_N.setCurrentText('2')
@@ -285,12 +356,14 @@ class KineticFitDialog(QtWidgets.QDialog):
         self._populate_table(2)
         self._last_fit = None
         self.btn_save_resid.setEnabled(False)
-        self._refresh_plot(replot_data=True)
+        self._refresh_plot()
         self.lbl_status.setText('Reset to defaults.')
         self.txt_result.setPlainText('Results will appear here after fitting.')
 
     def do_run(self):
-        app = self.app
+        if not self._traces:
+            warn_box(self, 'No data', 'Press Import first.')
+            return
         rows = self._read_table()
         if not rows:
             warn_box(self, 'No components', 'Add at least one component.')
@@ -307,96 +380,153 @@ class KineticFitDialog(QtWidgets.QDialog):
             warn_box(self, 'Invalid input', 'β must be > 0.')
             return
 
-        t_full, y_full, wl_actual, n_avg = self._get_trace()
+        t_full = self._t
+        Y_full = np.vstack([tr['y'] for tr in self._traces])
         t_lo = float(self.ed_t_min.value())
         t_hi = float(self.ed_t_max.value())
         if t_lo > t_hi:
             t_lo, t_hi = t_hi, t_lo
         m = (t_full >= t_lo) & (t_full <= t_hi)
         n_in = int(m.sum())
-        n_min = int(tau_init.size) + (1 if self.cb_inf.isChecked() else 0) + 1
+        has_inf = self.cb_inf.isChecked()
+        n_min = int(tau_init.size) + (1 if has_inf else 0) + 1
         if n_in < n_min:
             warn_box(self, 'Window too narrow',
                      f'Need ≥ {n_min} delay points; got {n_in}.')
             return
         t_fit = t_full[m]
-        y_fit = y_full[m]
+        Y_fit = Y_full[:, m]
 
-        irf_mode = self.dd_irf.currentData()
+        kw = dict(beta_init=beta_init, beta_fixed=beta_fixed,
+                  stretch_on=stretch_on, irf_mode=self.dd_irf.currentData())
+        t0_fixed = self.cb_t0_fix.isChecked()
+        fw_fixed = self.cb_fw_fix.isChecked()
+        is_global = Y_fit.shape[0] > 1
+        self.lbl_status.setText('Fitting…')
+        QtWidgets.QApplication.processEvents()
         try:
-            res = ta_core.fit_single_trace(
-                t_fit, y_fit,
-                tau_init=tau_init, tau_fixed=tau_fixed,
-                beta_init=beta_init, beta_fixed=beta_fixed,
-                stretch_on=stretch_on,
-                t0_init=float(self.ed_t0.value()),
-                t0_fixed=self.cb_t0_fix.isChecked(),
-                fwhm_init=float(self.ed_fw.value()),
-                fwhm_fixed=self.cb_fw_fix.isChecked(),
-                has_inf=self.cb_inf.isChecked(),
-                irf_mode=irf_mode)
+            if is_global:
+                # Shared τ / β / t₀ / FWHM, per-trace amplitudes
+                r = ta_core.fit_global_analysis(
+                    Y_fit, t_fit, tau_init,
+                    float(self.ed_t0.value()), float(self.ed_fw.value()),
+                    tau_fixed, t0_fixed, fw_fixed, has_inf,
+                    method='trf', **kw)
+                A, fit = r['A'], r['fit']
+                resid = Y_fit - fit
+                if stretch_on.any() and kw['irf_mode'] == 'skip':
+                    sig = r['fwhm'] / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+                    skip = t_fit <= r['t0'] + 3.0 * sig
+                    if int((~skip).sum()) > A.shape[1]:
+                        resid[:, skip] = np.nan
+            else:
+                r = ta_core.fit_single_trace(
+                    t_fit, Y_fit[0], tau_init=tau_init, tau_fixed=tau_fixed,
+                    t0_init=float(self.ed_t0.value()), t0_fixed=t0_fixed,
+                    fwhm_init=float(self.ed_fw.value()), fwhm_fixed=fw_fixed,
+                    has_inf=has_inf, **kw)
+                A, fit = r['A'][None, :], r['fit'][None, :]
+                resid = r['residual'][None, :]
         except Exception as e:
             warn_box(self, 'Fit error', f'Fit failed:\n{e}')
             self.lbl_status.setText('Fit failed.')
             return
 
-        # Stash for plotting / export
-        res['_t_fit'] = t_fit
-        res['_y_fit'] = y_fit
-        res['_t_full'] = t_full
-        res['_y_full'] = y_full
-        res['_wl'] = wl_actual
-        res['_n_avg'] = n_avg
-        res['_stretch_on'] = stretch_on
-        res['_has_inf'] = self.cb_inf.isChecked()
+        # Normalised result: A / fit / residual are always (n_traces, …)
+        res = {
+            'tau': r['tau'], 'beta': r['beta'], 't0': r['t0'],
+            'fwhm': r['fwhm'], 'A': A, 'fit': fit, 'residual': resid,
+            'ratio': ta_core.population_ratio(A),
+            'info': r['info'], 'stats': r['info'].get('stats'),
+            '_global': is_global,
+            '_t_fit': t_fit, '_Y_fit': Y_fit,
+            '_labels': [tr['label'] for tr in self._traces],
+            '_wls': [tr['wl'] for tr in self._traces],
+            '_n_avg': [tr['n_avg'] for tr in self._traces],
+            '_wl': self._traces[0]['wl'],
+            '_stretch_on': stretch_on, '_has_inf': has_inf,
+            '_tau_fixed': tau_fixed, '_beta_fixed': beta_fixed,
+            '_t0_fixed': t0_fixed, '_fw_fixed': fw_fixed,
+            '_window': (t_lo, t_hi, n_in),
+        }
         self._last_fit = res
-
-        # Build text report
-        lines = [f'Fit converged ({res["info"]["iters"]} iters), '
-                 f'RMS = {res["info"]["rms"]:.4g}']
-        lines.append(f'λ centre = {wl_actual:.2f} nm  '
-                     f'(avg of {n_avg} pixels)')
-        lines.append(f'Window: [{t_lo:.4g}, {t_hi:.4g}] '
-                     f'{app.t_unit_txt()}, n = {n_in}')
-        lines.append(f'IRF mode: {res["info"]["irf_mode"]}')
-        lines.append('')
-        lines.append('  i   τ              β       A          (type)')
-        for i in range(tau_init.size):
-            tag = 'stretched' if stretch_on[i] else 'exp'
-            lines.append(f'  {i+1}   {res["tau"][i]:10.4g} '
-                         f' {res["beta"][i]:6.3g}  '
-                         f'{res["A"][i]:10.4g}  ({tag})')
-        if self.cb_inf.isChecked():
-            lines.append(f'  ∞   {"":10}  {"":6}  {res["A"][-1]:10.4g}  (offset)')
-        lines.append('')
-        lines.append(f't₀ = {res["t0"]:.4g} {app.t_unit_txt()}'
-                     + ('  (fixed)' if self.cb_t0_fix.isChecked() else ''))
-        lines.append(f'FWHM = {res["fwhm"]:.4g} {app.t_unit_txt()}'
-                     + ('  (fixed)' if self.cb_fw_fix.isChecked() else ''))
-        self.txt_result.setPlainText('\n'.join(lines))
+        self.txt_result.setPlainText('\n'.join(self._report_lines(res)))
         self.lbl_status.setText(
-            f'Fit done — RMS = {res["info"]["rms"]:.3g}')
+            f'{"Global" if is_global else "Single-trace"} fit done — '
+            f'RMS = {res["info"]["rms"]:.3g}')
         # A fresh fit is now available — enable the explicit save
         # button.  The user clicks it to write the residual file.
         self.btn_save_resid.setEnabled(True)
-        self._refresh_plot(replot_data=False)
+        self._refresh_plot()
+
+    def _report_lines(self, res):
+        u = self.app.t_unit_txt()
+        st = res['stats']
+
+        def pm(val, sd):
+            if sd is None or not np.isfinite(sd):
+                return f'{val:.4g}'
+            return f'{val:.4g} ± {sd:.2g}'
+
+        def sd_of(key, i=None):
+            if st is None:
+                return None
+            return st[key] if i is None else st[key][i]
+
+        t_lo, t_hi, n_in = res['_window']
+        n_tr = len(res['_labels'])
+        lines = [(f'Global fit: {n_tr} traces, shared τ / β / t₀ / FWHM'
+                  if res['_global'] else 'Single-trace fit'),
+                 f'Window: [{t_lo:.4g}, {t_hi:.4g}] {u}, n = {n_in}',
+                 f'IRF mode: {res["info"]["irf_mode"]}', '',
+                 'Time constants (± 1σ):']
+        for i in range(res['tau'].size):
+            fx = ' (fixed)' if res['_tau_fixed'][i] else ''
+            txt = (f'  τ{i + 1} = {pm(res["tau"][i], sd_of("tau_std", i))}'
+                   f' {u}{fx}')
+            if res['_stretch_on'][i]:
+                bfx = ' (fixed)' if res['_beta_fixed'][i] else ''
+                txt += (f'   β = {pm(res["beta"][i], sd_of("beta_std", i))}'
+                        f'{bfx}  [stretched]')
+            lines.append(txt)
+        lines.append(f't₀ = {pm(res["t0"], sd_of("t0_std"))} {u}'
+                     + ('  (fixed)' if res['_t0_fixed'] else ''))
+        lines.append(f'FWHM = {pm(res["fwhm"], sd_of("fwhm_std"))} {u}'
+                     + ('  (fixed)' if res['_fw_fixed'] else ''))
+        lines.append('')
+        lines.append('Amplitudes (± 1σ) and population ratio |Aᵢ| / Σ|Aⱼ|:')
+        names = [f'A{i + 1}' for i in range(res['tau'].size)]
+        if res['_has_inf']:
+            names.append('A∞')
+        for j, label in enumerate(res['_labels']):
+            head = f'  [{label}]'
+            if n_tr > 1 and st is not None:
+                head += f'  R² = {st["r2_rows"][j]:.4f}'
+            lines.append(head)
+            for c, nm in enumerate(names):
+                sd = None if st is None else st['A_std'][j, c]
+                lines.append(f'    {nm} = {pm(res["A"][j, c], sd)}'
+                             f'   ({res["ratio"][j, c]:.1f} %)')
+        lines.append('')
+        lines.extend(ta_core.format_fit_stats(st))
+        return lines
 
     def save_residual(self):
-        """Prompt for a save path and write the single-trace residual
-        as a two-column CSV (delay, residual).
+        """Prompt for a save path and write the residual as two-column
+        CSV(s) (delay, residual).
 
-        Default filename: ``kfit_{wl}nm_residual.csv``.  Loaded back by
+        Default filename: ``kfit_{wl}nm_residual.csv``.  A global fit
+        writes one file per trace, ``kfit_{wl}nm_<chosen name>.csv``.  Loaded back by
         the Vibrational Coherence dialog via its "Browse..." picker.
         """
         res = self._last_fit
         if res is None:
             warn_box(self, 'No fit', 'Run the fit first.')
             return
-        wl = float(res.get('_wl', float('nan')))
-        if np.isfinite(wl):
-            default_name = f'kfit_{wl:.1f}nm_residual.csv'
+        if res['_global']:
+            default_name = 'kfit_global_residual.csv'
         else:
-            default_name = 'kfit_residual.csv'
+            default_name = f'kfit_{res["_wl"]:.1f}nm_residual.csv'
         path, _ = ask_save_path(
             self, 'Save Kfit residual',
             self.app.default_save_path(default_name),
@@ -405,44 +535,59 @@ class KineticFitDialog(QtWidgets.QDialog):
             return
         if not path.lower().endswith('.csv'):
             path += '.csv'
+        if res['_global']:
+            folder, stem = os.path.split(path[:-4])
+            if stem.startswith('kfit_'):
+                stem = stem[len('kfit_'):]
+            paths = [os.path.join(folder, f'kfit_{wl:.1f}nm_{stem}.csv')
+                     for wl in res['_wls']]
+        else:
+            paths = [path]
         try:
             t_col = np.asarray(res['_t_fit'], dtype=float).ravel()
-            r_col = np.asarray(res['residual'], dtype=float).ravel()
-            mat = np.column_stack([t_col, r_col])
             header = f'delay_{self.app.t_unit_hdr()},residual_dA'
-            np.savetxt(path, mat, delimiter=',', header=header,
-                       comments='', fmt='%.10g')
+            for p, r_row in zip(paths, res['residual']):
+                mat = np.column_stack([t_col, np.asarray(r_row, float)])
+                np.savetxt(p, mat, delimiter=',', header=header,
+                           comments='', fmt='%.10g')
             self.lbl_status.setText(
-                f'Residual saved: {os.path.basename(path)}')
+                f'Residual saved: {os.path.basename(paths[0])}'
+                + (f' (+{len(paths) - 1})' if len(paths) > 1 else ''))
             info_box(self, 'Residual saved',
-                     f'Wrote\n{path}\n\n'
-                     f'In Vibrational Coherence, select "Use saved '
-                     f'residual file" and browse to this CSV.')
+                     'Wrote\n' + '\n'.join(paths) + '\n\n'
+                     'In Vibrational Coherence, select "Use saved '
+                     'residual file" and browse to this CSV.')
         except Exception as e:
             warn_box(self, 'Save residual', f'Save failed:\n{e}')
 
     # ----------------- Plotting -----------------
-    def _refresh_plot(self, replot_data: bool = False):
+    def _refresh_plot(self):
         app = self.app
         ax = self.ax_main
         axR = self.ax_res
         ax.clear(); axR.clear()
+        if not self._traces:
+            ax.text(0.5, 0.5, 'Press Import to load data',
+                    ha='center', va='center', transform=ax.transAxes,
+                    color='0.4')
+            self.canvas.draw_idle()
+            return
 
-        if replot_data or self._last_fit is None:
-            t, y, wl_actual, n_avg = self._get_trace()
-        else:
-            t = self._last_fit['_t_full']
-            y = self._last_fit['_y_full']
-            wl_actual = self._last_fit['_wl']
-            n_avg = self._last_fit['_n_avg']
-
-        ax.plot(t, y, '.', color='k', markersize=4, label='data')
-        if self._last_fit is not None:
-            t_fit = self._last_fit['_t_fit']
-            fit_v = self._last_fit['fit']
-            res_v = self._last_fit['residual']
-            ax.plot(t_fit, fit_v, 'r-', linewidth=1.4, label='fit')
-            axR.plot(t_fit, res_v, '.', color=(0.4, 0.4, 0.4), markersize=3)
+        t = self._t
+        single = len(self._traces) == 1
+        cmap = ta_core._mpl_cm.get_cmap('tab10')
+        fit = self._last_fit
+        for j, tr in enumerate(self._traces):
+            col = 'k' if single else cmap(j % 10)
+            ax.plot(t, tr['y'], '.', color=col, markersize=4,
+                    label='data' if single else tr['label'])
+            if fit is not None:
+                ax.plot(fit['_t_fit'], fit['fit'][j], '-',
+                        color='r' if single else col, linewidth=1.4,
+                        label='fit' if single else None)
+                axR.plot(fit['_t_fit'], fit['residual'][j], '.',
+                         color=(0.4, 0.4, 0.4) if single else col,
+                         markersize=3)
 
         ax.axhline(0, color='k', linestyle=':', linewidth=0.5)
         axR.axhline(0, color='k', linestyle=':', linewidth=0.5)
@@ -458,62 +603,93 @@ class KineticFitDialog(QtWidgets.QDialog):
         ax.set_ylabel(r'$\Delta$A')
         axR.set_ylabel('residual')
         axR.set_xlabel(f'Delay ({app.t_unit_ax()})')
-        ax.set_title(rf'$\lambda$ = {wl_actual:.2f} nm   (avg {n_avg} px)')
+        if single:
+            tr = self._traces[0]
+            ax.set_title(rf'$\lambda$ = {tr["wl"]:.2f} nm   '
+                         f'(avg {tr["n_avg"]} px)')
+        else:
+            ax.set_title(f'Global fit — {len(self._traces)} pinned traces')
         ax.legend(loc='best', fontsize=8)
         ax.grid(True); axR.grid(True)
         self.canvas.draw_idle()
 
     # ----------------- Export -----------------
     def _export_trace(self):
-        if self._last_fit is None:
+        res = self._last_fit
+        if res is None:
             warn_box(self, 'No fit', 'Run the fit first.')
             return
-        path, _ = ask_save_path(
-            self, 'Export trace + fit',
-            self.app.default_save_path(
-                f'kfit_{self._last_fit["_wl"]:.1f}nm.csv'))
+        name = ('kfit_global.csv' if res['_global']
+                else f'kfit_{res["_wl"]:.1f}nm.csv')
+        path, _ = ask_save_path(self, 'Export trace + fit',
+                                self.app.default_save_path(name))
         if not path:
             return
-        t = self._last_fit['_t_fit']
-        y = self._last_fit['_y_fit']
-        fit_v = self._last_fit['fit']
-        res_v = self._last_fit['residual']
-        mat = np.column_stack([t, y, fit_v, res_v])
+        cols = [res['_t_fit']]
+        hdr = [f'delay_{self.app.t_unit_hdr()}']
+        for j, wl in enumerate(res['_wls']):
+            sfx = f'_{wl:.1f}nm' if res['_global'] else ''
+            cols += [res['_Y_fit'][j], res['fit'][j], res['residual'][j]]
+            hdr += [f'data{sfx}', f'fit{sfx}', f'residual{sfx}']
         delim = ',' if path.lower().endswith('.csv') else '\t'
         try:
-            np.savetxt(path, mat, delimiter=delim, fmt='%.10g',
-                       header=delim.join([
-                           f'delay_{self.app.t_unit_hdr()}',
-                           'data', 'fit', 'residual']),
-                       comments='')
+            np.savetxt(path, np.column_stack(cols), delimiter=delim,
+                       fmt='%.10g', header=delim.join(hdr), comments='')
             info_box(self, 'Saved', f'Wrote {path}')
         except Exception as e:
             warn_box(self, 'Export error', str(e))
 
     def _export_params(self):
-        if self._last_fit is None:
+        r = self._last_fit
+        if r is None:
             warn_box(self, 'No fit', 'Run the fit first.')
             return
         path, _ = ask_save_path(self, 'Export fit parameters',
                                 self.app.default_save_path('kfit_params.csv'))
         if not path:
             return
-        r = self._last_fit
-        rows = []
-        rows.append(['lambda_nm', f'{r["_wl"]:.4g}'])
-        rows.append(['n_avg_px', str(r['_n_avg'])])
-        rows.append(['rms', f'{r["info"]["rms"]:.6g}'])
-        rows.append(['t0', f'{r["t0"]:.6g}'])
-        rows.append(['fwhm', f'{r["fwhm"]:.6g}'])
-        rows.append(['irf_mode', str(r['info']['irf_mode'])])
-        for i in range(len(r['tau'])):
-            tag = 'stretched' if r['_stretch_on'][i] else 'exp'
-            rows.append([f'tau_{i+1}', f'{r["tau"][i]:.6g}'])
-            rows.append([f'beta_{i+1}', f'{r["beta"][i]:.6g}'])
-            rows.append([f'A_{i+1}', f'{r["A"][i]:.6g}'])
-            rows.append([f'type_{i+1}', tag])
+        st = r['stats'] or {}
+        n_tau, n_tr = len(r['tau']), len(r['_labels'])
+        nan = float('nan')
+
+        def g(v):
+            return f'{v:.6g}'
+
+        rows = [['fit_mode', 'global' if r['_global'] else 'single'],
+                ['n_traces', str(n_tr)],
+                ['rms', g(r['info']['rms'])]]
+        for key in ('r2', 'adj_r2', 'chi2_red', 'rss', 'aic', 'bic',
+                    'n_obs', 'n_par', 'dof'):
+            rows.append([key, g(st.get(key, nan))])
+        rows += [['t0', g(r['t0'])], ['t0_std', g(st.get('t0_std', nan))],
+                 ['fwhm', g(r['fwhm'])],
+                 ['fwhm_std', g(st.get('fwhm_std', nan))],
+                 ['irf_mode', str(r['info']['irf_mode'])]]
+        tau_std = st.get('tau_std', np.full(n_tau, nan))
+        beta_std = st.get('beta_std', np.full(n_tau, nan))
+        for i in range(n_tau):
+            rows += [[f'tau_{i+1}', g(r['tau'][i])],
+                     [f'tau_{i+1}_std', g(tau_std[i])],
+                     [f'beta_{i+1}', g(r['beta'][i])],
+                     [f'beta_{i+1}_std', g(beta_std[i])],
+                     [f'type_{i+1}',
+                      'stretched' if r['_stretch_on'][i] else 'exp']]
+        names = [str(i + 1) for i in range(n_tau)]
         if r['_has_inf']:
-            rows.append(['A_inf', f'{r["A"][-1]:.6g}'])
+            names.append('inf')
+        A_std = st.get('A_std', np.full(r['A'].shape, nan))
+        r2_rows = st.get('r2_rows', np.full(n_tr, nan))
+        for j, label in enumerate(r['_labels']):
+            pre = f'T{j+1}_' if r['_global'] else ''
+            rows += [[f'{pre}lambda_nm', f'{r["_wls"][j]:.4g}'],
+                     [f'{pre}n_avg_px', str(r['_n_avg'][j])]]
+            if r['_global']:
+                rows += [[f'{pre}label', label.replace(',', ';')],
+                         [f'{pre}r2', g(r2_rows[j])]]
+            for c, nm in enumerate(names):
+                rows += [[f'{pre}A_{nm}', g(r['A'][j, c])],
+                         [f'{pre}A_{nm}_std', g(A_std[j, c])],
+                         [f'{pre}ratio_{nm}_pct', g(r['ratio'][j, c])]]
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 for k, v in rows:
