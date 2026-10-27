@@ -64,7 +64,7 @@ def save(widget: QtWidgets.QWidget, name: str):
     print(f'wrote {path} ({pix.width()}x{pix.height()})')
 
 
-SCENES = ('main', 'crop', 'moving')
+SCENES = ('main', 'crop', 'moving', 'gating')
 
 
 def main(argv=None):
@@ -117,6 +117,23 @@ def main(argv=None):
         dlg._on_resample_changed()
         save(dlg, 'crop_moving_average.png')
         dlg.close()
+
+    if 'gating' in scenes:
+        # Noisy data: single vs integrated pins side by side.
+        wl_n, t_n, A_n = synthetic_ta(noise=1.5e-3)
+        win.set_loaded_data(wl_n, t_n, A_n, 'Loaded: synthetic_TA_noisy.csv')
+        i1 = int(np.argmin(np.abs(t_n - 1.0)))
+        win.set_sel_t(float(t_n[i1]))
+        win.pin_spec()
+        win.ed_spec_int_half.setValue(4)
+        win.chk_spec_int.setChecked(True)
+        win.set_sel_t(float(t_n[np.argmin(np.abs(t_n - 30.0))]))
+        win.set_sel_wl(520.0)
+        win.pin_kin()
+        win.ed_kin_int_bw.setValue(20.0)
+        win.chk_kin_int.setChecked(True)
+        win.set_sel_wl(650.0)
+        save(win, 'pin_gating.png')
     win.close()
 
 

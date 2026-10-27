@@ -17,6 +17,8 @@ defined as methods of the class but which have no GUI dependency:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from scipy.special import erfc, erfcx
 from scipy.optimize import minimize, least_squares
@@ -980,6 +982,40 @@ def resample_by_spec(wl: np.ndarray, A: np.ndarray, spec: dict):
         return moving_average_wavelength(wl, A, spec['window'],
                                          spec['kernel'])
     return resample_wavelength(wl, A, spec['dx'], spec['mode'])
+
+
+# =====================================================================
+# Spectrum / kinetics gating (main-window "Integrate" option)
+# =====================================================================
+def delay_gate(n: int, idx: int, half: int):
+    """Inclusive delay-index window ``idx ± half`` clipped to ``[0, n-1]``.
+
+    Returns ``(lo, hi)``; ``half <= 0`` gives the single index."""
+    half = max(0, int(half))
+    return max(0, int(idx) - half), min(n - 1, int(idx) + half)
+
+
+def wavelength_gate(wl: np.ndarray, center: float, bw: float) -> np.ndarray:
+    """Boolean mask of pixels with ``|λ - center| <= bw/2``.
+
+    A tiny relative tolerance keeps pixels sitting exactly on the window
+    edge (``center ± bw/2`` on a uniform grid) inside despite float
+    rounding.  The pixel nearest ``center`` is always included, so a
+    bandwidth narrower than the pixel spacing degrades to a single trace."""
+    wl = np.asarray(wl, dtype=float)
+    half = 0.5 * max(0.0, float(bw))
+    sel = np.abs(wl - center) <= half * (1 + 1e-9) + 1e-12
+    sel[int(np.argmin(np.abs(wl - center)))] = True
+    return sel
+
+
+def gated_mean(A: np.ndarray, sel, axis: int) -> np.ndarray:
+    """NaN-aware mean of ``A`` over the gated slice ``sel`` along ``axis``
+    (all-NaN positions stay NaN without a RuntimeWarning)."""
+    sub = np.take(A, np.arange(A.shape[axis])[sel], axis=axis)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return np.nanmean(sub, axis=axis)
 
 
 def fit_chirp_params(pts: np.ndarray):

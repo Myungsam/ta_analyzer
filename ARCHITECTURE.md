@@ -52,8 +52,8 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 
 | 계층 | 모듈 | 줄 수 | 역할 |
 |---|---|---:|---|
-| **Entry / Shell** | `ta_main.py` | 3,210 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
-| **Numerical core** | `ta_core.py` | 2,135 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), IRF 컨볼루션, GA(VARPRO), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
+| **Entry / Shell** | `ta_main.py` | 3,368 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
+| **Numerical core** | `ta_core.py` | 2,168 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
 | | `ta_lpsvd.py` | 525 | LPSVD(Lorentzian)와 Gaussian 감쇠 진동자 모드 분해 (1D 시계열) |
 | **Infra / Service** | `ta_residual_store.py` | 369 | GA/LDA residual을 `residuals/*.xlsx`로 저장하고, 목록 조회·로드 (CSV도 로드 가능) |
 | | `ta_device.py` | 725 | TensorFlow 장치 목록, `TFBackend`(lstsq/matmul), GPU 상태(pynvml/nvidia-smi), 팬 제어, keep-warm 스레드, 관리자 권한 재실행 |
@@ -124,7 +124,8 @@ graph TD
 | Zero-time | `tZeroShift` | 누적된 delay 축 이동량 |
 | Crop / Resample (v1.1.0, v1.2.0) | `crop_bounds`, `resample_enabled`, `resample_mode`(`average`/`decimate`/`moving`), `resample_dx`, `resample_window`, `resample_kernel`, `resample_info`, `_crop_wl_pre_resample` | 요청한 crop 범위(원본 시간축 기준, 전체면 None)와 λ축 resampling 설정. 모드별 파라미터(bin: `resample_dx`, moving: `resample_window`/`resample_kernel`)는 커널이 받아들였을 때만 저장됩니다. `resample_info`는 수행한 연산(average: `starts`, decimate: `idx`, moving: `k`/`kernel`), `_crop_wl_pre_resample`는 resampling 직전의 crop된 λ축 |
 | Selection | `selWL`, `selT`, `_selT_idx` | 크로스헤어 위치. delay는 측정된 점으로만 이동(index 기반) |
-| Overlays | `specOverlays`(t 목록), `kinOverlays`(λ 목록) | Pin 기능 |
+| Overlays | `specOverlays`(t 목록), `kinOverlays`(λ 목록), pin별 구간 `specOverlayHalf`(t→±idx), `kinOverlayBW`(λ→BW nm) | Pin 기능. 구간이 없는 pin은 한 점 trace |
+| Gating (Integrate) | `spec_int_enabled`/`spec_int_half`, `kin_int_enabled`/`kin_int_bw` | 현재 spectrum/kinetics를 구간 평균으로 표시(`_spec_trace`, `_kin_trace`). 데이터는 바꾸지 않고 보기·Export pins에만 적용 |
 | 표시 설정 | `delay_scale_mode`(linear/log/split), `split_threshold`, `main_view_t{min,max}`, `map_colormap`, `map_z_{min,max}`, `time_unit`(ps/us) | |
 | GA 설정 | `ga_n_comp`, `ga_tau_init/fixed`, `ga_beta_init/fixed`, `ga_stretch_on`, `ga_has_inf`, `ga_t0(_fixed)`, `ga_fwhm(_fixed)`, `ga_irf_mode`, `ga_t_{min,max}` | 다이얼로그를 다시 열어도 유지됨 |
 | GA 결과 | `ga_result_{tau,beta,t0,fwhm,dads,eads,fit,rms,delay,data,t_window,...}` | `delay`/`data`는 fit window로 자른 축 |

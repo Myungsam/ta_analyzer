@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.2.0** (latest) | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
+| **v1.3.0** (latest) | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
+| v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Wavelength resampling (Average / Decimate) in Crop Data, Korean/English user guide |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Version before resampling |
 
@@ -29,7 +30,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.2.0      # latest (same as main)
+git checkout v1.3.0      # latest (same as main)
+git checkout v1.2.0      # before Integrate
 git checkout v1.1.0      # before moving average
 git checkout v1.0.0      # before resampling
 ```
@@ -61,7 +63,7 @@ python ta_main.py
 6. **Global Analysis...**: enter the number of components and initial τ values, press **Run**, and inspect DADS/EADS.
 7. Save with **Export 2D Data...** and the Export buttons in each analysis window.
 
-Clicking the 2D map updates the Spectrum (selected t) and Kinetics (selected λ) panels on the right. **Pin** keeps several traces overlaid.
+Clicking the 2D map updates the Spectrum (selected t) and Kinetics (selected λ) panels on the right. **Pin** keeps several traces overlaid, and the **Integrate** row below averages over a delay/wavelength window (section 5.6).
 
 ## 5. Feature guide
 
@@ -142,7 +144,22 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 ### 5.5 Export
 - **Export 2D Data...**: the corrected matrix. The file name records the state (e.g. `_2D_BG5_chirp_cropped_rs2nm.csv`, or `_ma5box` for a moving average).
 - **Export 2D data_original...**: the matrix before corrections (crop/resampling included)
-- **Export pins** in the Spectrum/Kinetics panels and the Export buttons in each analysis window
+- **Export pins** in the Spectrum/Kinetics panels and the Export buttons in each analysis window. Pins taken with Integrate export the window mean, with the window in the header (`dA_t=30.75ps_avg_idx95-103`, `dA_wl=650nm_BW20nm`).
+
+### 5.6 Spectrum / Kinetics window averaging (Integrate, v1.3.0)
+
+![Integrate](docs/images/pin_gating.png)
+
+Checking **Integrate** on the row below the Spectrum or Kinetics panel draws the mean over a window (NaN ignored) instead of a single trace.
+
+| Panel | Input | Averaged window | Legend example |
+|---|---|---|---|
+| Spectrum | **±idx** (N) | delay indices `idx−N … idx+N` (2N+1 points, clipped at the array ends) | `t = 31.1 ± 4.6 ps (idx 95–103)` — mean ± std of the window delays |
+| Kinetics | **BW (nm)** | pixels with `|λ − λc| ≤ BW/2` around the selected λc | `λ = 650.0 nm, BW 20 nm` |
+
+- The indicator box on the right shows the window actually averaged, its center and the point count (e.g. `idx 95–103 (24.47–38.63 ps) · center 30.75 ps · 9 pts`, `640.1–659.9 nm · center 650.0 nm · 62 pts`); `off` when unchecked.
+- **Pin** while checked stores the window with that pin; pinning while unchecked gives a single trace as before. Re-pinning the same delay/λ replaces its window.
+- ±idx = 0, or a BW narrower than the pixel spacing, equals a single trace. The data itself is not changed; only the display and Export pins use the window.
 
 ## 6. Input file formats
 
@@ -179,13 +196,21 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   export PYTHONPATH=. PYTHONIOENCODING=utf-8 QT_QPA_PLATFORM=offscreen
   python test/test_crop_resample.py
   python test/test_crop_moving_average.py
+  python test/test_pin_gating.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving` selects a subset)
+- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving,gating` selects a subset)
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.3.0** (2026-10-27)
+- Spectrum panel **Integrate ±idx**: spectrum averaged over a delay-index window; legend shows the window delays' mean ± std
+- Kinetics panel **Integrate BW (nm)**: kinetics averaged over λc ± BW/2
+- New row under each panel with checkbox, input and an indicator (window, center, point count)
+- Pins remember their window; Export pins writes the window mean and tags the header with the window
+- Fixed the Kinetics title keeping the previous wavelength while pins exist
 
 **v1.2.0** (2026-09-28)
 - **Moving avg** mode in Crop Data: pixel window (odd, 3–101), Box / Triangular / Gaussian (σ = k/6) kernels

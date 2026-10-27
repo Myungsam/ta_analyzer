@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.2.0** (최신) | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
+| **v1.3.0** (최신) | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
+| v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Crop Data에 파장축 Resampling(Average / Decimate) 추가, 한/영 사용 설명서 |
 | v1.0.0 | [`v1.0.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.0.0) | Resampling 이전 버전 |
 
@@ -29,7 +30,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.2.0      # 최신 버전 (main과 같음)
+git checkout v1.3.0      # 최신 버전 (main과 같음)
+git checkout v1.2.0      # 구간 평균(Integrate) 이전
 git checkout v1.1.0      # Moving average 이전
 git checkout v1.0.0      # Resampling 이전
 ```
@@ -61,7 +63,7 @@ python ta_main.py
 6. **Global Analysis...** 에서 성분 수와 τ 초깃값을 넣고 **Run** → DADS/EADS 확인
 7. **Export 2D Data...**, 각 분석 창의 Export 버튼으로 결과를 저장합니다.
 
-2D 맵을 클릭하면 오른쪽 Spectrum(선택한 t)과 Kinetics(선택한 λ) 패널이 바뀝니다. **Pin**을 누르면 여러 개를 겹쳐 볼 수 있습니다.
+2D 맵을 클릭하면 오른쪽 Spectrum(선택한 t)과 Kinetics(선택한 λ) 패널이 바뀝니다. **Pin**을 누르면 여러 개를 겹쳐 볼 수 있고, 아랫줄 **Integrate**를 켜면 delay/파장 구간 평균을 봅니다(5.6절).
 
 ## 5. 기능별 사용법
 
@@ -142,7 +144,22 @@ GA와 LDA의 **Save residual**은 `residuals/` 폴더에 xlsx로 저장되고, C
 ### 5.5 내보내기
 - **Export 2D Data...**: 보정된 행렬. 파일 이름에 상태가 붙습니다(예: `_2D_BG5_chirp_cropped_rs2nm.csv`, Moving avg면 `_ma5box`).
 - **Export 2D data_original...**: 보정 전 행렬(crop/resampling은 반영됨)
-- Spectrum/Kinetics 패널의 **Export pins**, 각 분석 창의 Export 버튼
+- Spectrum/Kinetics 패널의 **Export pins**, 각 분석 창의 Export 버튼. Integrate로 pin한 열은 구간 평균값이고 헤더에 구간이 붙습니다(`dA_t=30.75ps_avg_idx95-103`, `dA_wl=650nm_BW20nm`).
+
+### 5.6 Spectrum / Kinetics 구간 평균 (Integrate, v1.3.0)
+
+![Integrate](docs/images/pin_gating.png)
+
+Spectrum과 Kinetics 패널 아랫줄의 **Integrate** 체크박스를 켜면 한 점 대신 구간 평균(NaN 제외)을 그립니다.
+
+| 패널 | 입력 | 평균 구간 | Legend 예 |
+|---|---|---|---|
+| Spectrum | **±idx** (N) | delay index `idx−N … idx+N` (2N+1점, 배열 끝에서는 잘림) | `t = 31.1 ± 4.6 ps (idx 95–103)` — 구간 delay의 평균 ± 표준편차 |
+| Kinetics | **BW (nm)** | 선택 파장 λc에서 `|λ − λc| ≤ BW/2`인 픽셀 | `λ = 650.0 nm, BW 20 nm` |
+
+- 오른쪽 표시창(indicator)에 실제로 평균한 구간, 중심값, 점 수가 나옵니다(예: `idx 95–103 (24.47–38.63 ps) · center 30.75 ps · 9 pts`, `640.1–659.9 nm · center 650.0 nm · 62 pts`). 꺼져 있으면 `off`.
+- 체크한 상태에서 **Pin**하면 그 pin은 당시 구간을 기억합니다. 체크를 끄고 pin하면 기존처럼 한 점 trace입니다. 같은 delay/λ를 다시 pin하면 구간이 새 값으로 바뀝니다.
+- ±idx = 0 또는 BW가 픽셀 간격보다 작으면 한 점과 같습니다. 데이터 자체는 바꾸지 않으며, 보기와 Export pins에만 적용됩니다.
 
 ## 6. 입력 파일 형식
 
@@ -179,13 +196,21 @@ corner, t1, t2, ..., tN
   export PYTHONPATH=. PYTHONIOENCODING=utf-8 QT_QPA_PLATFORM=offscreen
   python test/test_crop_resample.py
   python test/test_crop_moving_average.py
+  python test/test_pin_gating.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving`으로 일부만 가능)
+- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving,gating`으로 일부만 가능)
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.3.0** (2026-10-27)
+- Spectrum 패널에 **Integrate ±idx**: delay index 구간 평균 스펙트럼, legend에 구간 delay 평균 ± 표준편차
+- Kinetics 패널에 **Integrate BW (nm)**: λc ± BW/2 구간 평균 kinetics
+- 각 패널 아랫줄에 체크박스·입력·indicator(평균 구간, 중심값, 점 수) 추가
+- Pin이 구간을 기억하고, Export pins는 구간 평균값과 구간 정보를 헤더에 기록
+- Pin이 있을 때 Kinetics 제목이 이전 파장으로 남던 문제 수정
 
 **v1.2.0** (2026-09-28)
 - Crop Data에 **Moving avg** 모드 추가: pixel window(홀수 3–101), Box / Triangular / Gaussian(σ = k/6) kernel

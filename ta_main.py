@@ -189,6 +189,18 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # --- Pinned overlays ---
         self.specOverlays: list[float] = []   # pinned delay values
         self.kinOverlays: list[float] = []    # pinned wavelength values
+        # Integration window stored per pin (missing key ⇒ single trace):
+        # ±delay-index half-width for spectra, bandwidth (nm) for kinetics.
+        self.specOverlayHalf: dict[float, int] = {}
+        self.kinOverlayBW: dict[float, float] = {}
+
+        # --- Gating of the current spectrum / kinetics ("Integrate") ---
+        # Spectrum: mean over delay idx ± spec_int_half.
+        # Kinetics: mean over |λ - λc| <= kin_int_bw / 2.
+        self.spec_int_enabled = False
+        self.spec_int_half = 2
+        self.kin_int_enabled = False
+        self.kin_int_bw = 10.0
 
         # --- Delay-axis scale mode ---
         self.delay_scale_mode = 'linear'      # 'linear' | 'log' | 'split'
@@ -642,6 +654,25 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # navigation toolbar above does the same thing.)
         s_ctrl.addStretch(1)
         p_s_lay.addLayout(s_ctrl)
+        # Second row: delay gating (integrated spectrum over idx ± N)
+        s_int = QtWidgets.QHBoxLayout()
+        self.chk_spec_int = QtWidgets.QCheckBox(u'Integrate  ±idx:')
+        self.chk_spec_int.setToolTip(
+            'Show the mean spectrum over delay indices idx ± N instead of '
+            'the single delay.  Pins taken while checked keep their window.')
+        self.chk_spec_int.toggled.connect(self._on_spec_int_change)
+        s_int.addWidget(self.chk_spec_int)
+        self.ed_spec_int_half = make_int_edit(self.spec_int_half,
+                                              minv=0, maxv=100000)
+        self.ed_spec_int_half.setToolTip(
+            'Half-width N of the delay-index window (window = 2N+1 points, '
+            'clipped at the ends of the delay array).')
+        self.ed_spec_int_half.valueChanged.connect(self._on_spec_int_change)
+        s_int.addWidget(self.ed_spec_int_half)
+        self.lbl_spec_int = self._make_indicator(
+            'Delay window actually averaged for the current spectrum.')
+        s_int.addWidget(self.lbl_spec_int, stretch=1)
+        p_s_lay.addLayout(s_int)
         right_split.addWidget(pnl_s)
 
         # Kinetics panel
@@ -678,6 +709,24 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # navigation toolbar above does the same thing.)
         k_ctrl.addStretch(1)
         p_k_lay.addLayout(k_ctrl)
+        # Second row: bandwidth gating (integrated kinetics over λc ± BW/2)
+        k_int = QtWidgets.QHBoxLayout()
+        self.chk_kin_int = QtWidgets.QCheckBox('Integrate  BW (nm):')
+        self.chk_kin_int.setToolTip(
+            'Show the mean kinetics over wavelengths within ±BW/2 of the '
+            'selected λ.  Pins taken while checked keep their bandwidth.')
+        self.chk_kin_int.toggled.connect(self._on_kin_int_change)
+        k_int.addWidget(self.chk_kin_int)
+        self.ed_kin_int_bw = make_double_edit(self.kin_int_bw, decimals=2,
+                                              minv=0.0, maxv=1e5)
+        self.ed_kin_int_bw.setToolTip(
+            'Full bandwidth BW (nm) centred on the selected wavelength.')
+        self.ed_kin_int_bw.valueChanged.connect(self._on_kin_int_change)
+        k_int.addWidget(self.ed_kin_int_bw)
+        self.lbl_kin_int = self._make_indicator(
+            'Wavelength band actually averaged for the current kinetics.')
+        k_int.addWidget(self.lbl_kin_int, stretch=1)
+        p_k_lay.addLayout(k_int)
         right_split.addWidget(pnl_k)
 
         splitter.addWidget(right_split)
@@ -895,6 +944,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.masked_regions = []
         self.specOverlays = []
         self.kinOverlays = []
+        self.specOverlayHalf = {}
+        self.kinOverlayBW = {}
         self.crop_bounds = None
         self.resample_enabled = False
         self.resample_dx = 1.0
@@ -1436,6 +1487,82 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         ax.callbacks.connect('xlim_changed', self._on_spec_xlim_changed)
         ax.callbacks.connect('ylim_changed', self._on_spec_ylim_changed)
 
+    # ================================================================
+    # Gating ("Integrate" rows under the spectrum / kinetics panels)
+    # ================================================================
+    def _make_indicator(self, tooltip: str) -> QtWidgets.QLabel:
+        lbl = QtWidgets.QLabel('off')
+        # Wraps onto a second line instead of clipping in a narrow panel.
+        lbl.setWordWrap(True)
+        lbl.setMinimumWidth(110)
+        lbl.setStyleSheet(
+            'border: 1px solid #b5b5b5; border-radius: 3px; '
+            'padding: 2px 6px; background: #f7f7f7;')
+        lbl.setToolTip(tooltip)
+        return lbl
+
+    def _on_spec_int_change(self, *_):
+        self.spec_int_enabled = self.chk_spec_int.isChecked()
+        self.spec_int_half = int(self.ed_spec_int_half.value())
+        self._draw_spectrum()
+
+    def _on_kin_int_change(self, *_):
+        self.kin_int_enabled = self.chk_kin_int.isChecked()
+        self.kin_int_bw = float(self.ed_kin_int_bw.value())
+        self._draw_kinetics()
+
+    def _cur_spec_half(self) -> int:
+        return self.spec_int_half if self.spec_int_enabled else 0
+
+    def _cur_kin_bw(self) -> float:
+        return self.kin_int_bw if self.kin_int_enabled else 0.0
+
+    def _spec_trace(self, idx: int, half: int):
+        """ΔA(λ) at delay ``idx`` — averaged over idx ± ``half`` when
+        ``half > 0`` — plus its legend label (delay mean ± std)."""
+        unit = self.t_unit_ax()
+        if half <= 0:
+            return self.deltaA[:, idx], f't = {self.delay[idx]:.3g} {unit}'
+        lo, hi = ta_core.delay_gate(len(self.delay), idx, half)
+        y = ta_core.gated_mean(self.deltaA, slice(lo, hi + 1), axis=1)
+        t = self.delay[lo:hi + 1]
+        return y, (f't = {t.mean():.3g} ± {t.std():.2g} {unit} '
+                   f'(idx {lo}–{hi})')
+
+    def _kin_trace(self, idx: int, bw: float):
+        """ΔA(t) at wavelength pixel ``idx`` — averaged over
+        |λ - λ[idx]| <= ``bw``/2 when ``bw > 0`` — plus its legend label."""
+        wl_c = float(self.wavelength[idx])
+        if bw <= 0:
+            return self.deltaA[idx, :], f'λ = {wl_c:.1f} nm'
+        sel = ta_core.wavelength_gate(self.wavelength, wl_c, bw)
+        y = ta_core.gated_mean(self.deltaA, sel, axis=0)
+        return y, f'λ = {wl_c:.1f} nm, BW {bw:g} nm'
+
+    def _update_spec_int_indicator(self):
+        half = self._cur_spec_half()
+        if self.delay is None or not self.spec_int_enabled:
+            self.lbl_spec_int.setText('off')
+            return
+        idx = int(np.argmin(np.abs(self.delay - self.selT)))
+        lo, hi = ta_core.delay_gate(len(self.delay), idx, half)
+        u = self.t_unit_txt()
+        self.lbl_spec_int.setText(
+            f'idx {lo}–{hi} ({self.delay[lo]:.4g}–{self.delay[hi]:.4g} {u})'
+            f' · center {self.delay[idx]:.4g} {u} · {hi - lo + 1} pts')
+
+    def _update_kin_int_indicator(self):
+        if self.wavelength is None or not self.kin_int_enabled:
+            self.lbl_kin_int.setText('off')
+            return
+        idx = int(np.argmin(np.abs(self.wavelength - self.selWL)))
+        wl_c = float(self.wavelength[idx])
+        band = self.wavelength[ta_core.wavelength_gate(
+            self.wavelength, wl_c, self.kin_int_bw)]
+        self.lbl_kin_int.setText(
+            f'{band.min():.1f}–{band.max():.1f} nm · '
+            f'center {wl_c:.1f} nm · {band.size} pts')
+
     def _compute_spec_layout_sig(self):
         """Identifies when the spectrum panel needs a full rebuild
         rather than just updating the current-trace ydata.
@@ -1446,12 +1573,14 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             len(self.wavelength),
             float(self.wavelength[0]), float(self.wavelength[-1]),
             tuple(self.specOverlays),
+            tuple(self.specOverlayHalf.get(t, 0) for t in self.specOverlays),
             self.time_unit,
         )
 
     def _draw_spectrum(self):
         if self.deltaA is None:
             return
+        self._update_spec_int_indicator()
         new_sig = self._compute_spec_layout_sig()
         if (new_sig is not None and new_sig == self._spec_layout_sig
                 and self._spec_line_current is not None):
@@ -1468,10 +1597,9 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self._suppress_zoom_save = True
         try:
             idx = int(np.argmin(np.abs(self.delay - self.selT)))
-            ydata = self.deltaA[:, idx]
+            ydata, label = self._spec_trace(idx, self._cur_spec_half())
             self._spec_line_current.set_ydata(ydata)
-            label = (f't = {self.delay[idx]:.3g} {self.t_unit_ax()} '
-                     f'(current)')
+            label = f'{label} (current)'
             self._spec_line_current.set_label(label)
 
             ax = self.canvas_spec.ax
@@ -1568,20 +1696,20 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             self._spec_lines_overlay = []
             for k, t_val in enumerate(self.specOverlays):
                 idx = int(np.argmin(np.abs(self.delay - t_val)))
-                h, = ax.plot(self.wavelength, self.deltaA[:, idx], '-',
+                y, lbl = self._spec_trace(
+                    idx, self.specOverlayHalf.get(t_val, 0))
+                h, = ax.plot(self.wavelength, y, '-',
                              color=cmap(k % 10), linewidth=1.0)
                 leg_handles.append(h)
                 self._spec_lines_overlay.append(h)
-                leg_labels.append(
-                    f't = {self.delay[idx]:.3g} {self.t_unit_ax()}')
+                leg_labels.append(lbl)
 
             idx = int(np.argmin(np.abs(self.delay - self.selT)))
-            h, = ax.plot(self.wavelength, self.deltaA[:, idx], 'b-',
-                         linewidth=1.6)
+            y, lbl = self._spec_trace(idx, self._cur_spec_half())
+            h, = ax.plot(self.wavelength, y, 'b-', linewidth=1.6)
             leg_handles.append(h)
             self._spec_line_current = h
-            label_current = (f't = {self.delay[idx]:.3g} '
-                             f'{self.t_unit_ax()} (current)')
+            label_current = f'{lbl} (current)'
             h.set_label(label_current)
             leg_labels.append(label_current)
 
@@ -1595,8 +1723,9 @@ class TAAnalyzer(QtWidgets.QMainWindow):
 
             if len(leg_handles) > 1:
                 # Set labels on the overlay handles too (used by legend)
-                for h, lbl in zip(self._spec_lines_overlay, leg_labels[:-1]):
-                    h.set_label(lbl)
+                for h, ov_lbl in zip(self._spec_lines_overlay,
+                                     leg_labels[:-1]):
+                    h.set_label(ov_lbl)
                 ax.legend(loc='best', fontsize=8)
             else:
                 ax.set_title(leg_labels[-1])
@@ -1623,13 +1752,18 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                 else None,
             len(self.delay),
             float(self.delay[0]), float(self.delay[-1]),
+            # λ grid too: pinned (integrated) traces depend on it.
+            len(self.wavelength),
+            float(self.wavelength[0]), float(self.wavelength[-1]),
             tuple(self.kinOverlays),
+            tuple(self.kinOverlayBW.get(w, 0.0) for w in self.kinOverlays),
             self.time_unit,
         )
 
     def _draw_kinetics(self):
         if self.deltaA is None:
             return
+        self._update_kin_int_indicator()
         new_sig = self._compute_kin_layout_sig()
         n_panels_expected = 2 if self.delay_scale_mode == 'split' else 1
         cur_axes = self.fig_kin.axes
@@ -1657,20 +1791,21 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                 masks = [self.delay <= thr, self.delay >= thr]
 
             idx = int(np.argmin(np.abs(self.wavelength - self.selWL)))
-            label_current = (f'λ = {self.wavelength[idx]:.1f} nm '
-                             f'(current)')
+            y_full, lbl = self._kin_trace(idx, self._cur_kin_bw())
+            label_current = f'{lbl} (current)'
             axes = self.fig_kin.axes
             for k, (m, line) in enumerate(zip(masks, self._kin_line_current)):
                 if line is None:
                     continue
-                line.set_ydata(self.deltaA[idx, m])
+                line.set_ydata(y_full[m])
                 line.set_label(label_current)
                 if k < len(axes):
                     ax = axes[k]
                     if k == 0:
-                        if not self.kinOverlays:
-                            ax.set_title(label_current)
-                        else:
+                        # Same title rule as the full rebuild.
+                        if len(axes) == 1:
+                            ax.set_title(lbl)
+                        if self.kinOverlays:
                             leg = ax.get_legend()
                             if leg is not None:
                                 leg.remove()
@@ -1784,26 +1919,31 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             self._kin_lines_overlay = [[], []]
             self._kin_line_current = [None, None]
 
+            # Full-length traces, computed once and sliced per panel.
+            overlay_traces = [
+                self._kin_trace(
+                    int(np.argmin(np.abs(self.wavelength - wl_val))),
+                    self.kinOverlayBW.get(wl_val, 0.0))
+                for wl_val in self.kinOverlays]
+            idx = int(np.argmin(np.abs(self.wavelength - self.selWL)))
+            y_cur, lbl_cur = self._kin_trace(idx, self._cur_kin_bw())
+
             for k, (ax, m, scale) in enumerate(zip(axes, masks, scales)):
                 t_sub = self.delay[m]
                 if t_sub.size == 0:
                     continue
                 leg_h, leg_l = [], []
-                for j, wl_val in enumerate(self.kinOverlays):
-                    idx = int(np.argmin(np.abs(self.wavelength - wl_val)))
-                    h, = ax.plot(t_sub, self.deltaA[idx, m], '-',
+                for j, (y, label) in enumerate(overlay_traces):
+                    h, = ax.plot(t_sub, y[m], '-',
                                  color=cmap(j % 10), linewidth=1.0)
                     self._kin_lines_overlay[k].append(h)
-                    label = f'λ = {self.wavelength[idx]:.1f} nm'
                     h.set_label(label)
                     if k == 0:
                         leg_h.append(h)
                         leg_l.append(label)
-                idx = int(np.argmin(np.abs(self.wavelength - self.selWL)))
-                h, = ax.plot(t_sub, self.deltaA[idx, m], 'r-', linewidth=1.6)
+                h, = ax.plot(t_sub, y_cur[m], 'r-', linewidth=1.6)
                 self._kin_line_current[k] = h
-                label_current = (f'λ = {self.wavelength[idx]:.1f} nm '
-                                 f'(current)')
+                label_current = f'{lbl_cur} (current)'
                 h.set_label(label_current)
                 if k == 0:
                     leg_h.append(h)
@@ -1821,7 +1961,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                 if k == 0 and len(leg_h) > 1:
                     ax.legend(leg_h, leg_l, loc='best', fontsize=8)
                 if k == 0 and n_panels == 1:
-                    ax.set_title(f'λ = {self.wavelength[idx]:.1f} nm')
+                    ax.set_title(lbl_cur)
 
             # Cache structure so subsequent selWL changes can use the
             # incremental update path.
@@ -2511,6 +2651,12 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         val = float(self.delay[idx])
         if val not in self.specOverlays:
             self.specOverlays.append(val)
+        # Re-pinning the same delay replaces its stored window.
+        half = self._cur_spec_half()
+        if half > 0:
+            self.specOverlayHalf[val] = half
+        else:
+            self.specOverlayHalf.pop(val, None)
         self._draw_spectrum()
 
     def pin_kin(self):
@@ -2520,14 +2666,21 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         val = float(self.wavelength[idx])
         if val not in self.kinOverlays:
             self.kinOverlays.append(val)
+        bw = self._cur_kin_bw()
+        if bw > 0:
+            self.kinOverlayBW[val] = bw
+        else:
+            self.kinOverlayBW.pop(val, None)
         self._draw_kinetics()
 
     def clear_spec_overlays(self):
         self.specOverlays = []
+        self.specOverlayHalf = {}
         self._draw_spectrum()
 
     def clear_kin_overlays(self):
         self.kinOverlays = []
+        self.kinOverlayBW = {}
         self._draw_kinetics()
 
     # ---- Save-path defaults ----
@@ -2567,20 +2720,23 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                      'Pin one or more delays before exporting.')
             return
         # Resolve each pinned delay to the nearest recorded index;
-        # de-dup if two pins snap to the same column.
-        seen, idxs, vals = set(), [], []
+        # de-dup if two pins snap to the same column (and window).
+        # Integrated pins export the window mean, tagged with its range.
+        unit = self.t_unit_hdr()
+        seen, headers, cols = set(), ['wavelength_nm'], [self.wavelength]
         for t_val in self.specOverlays:
             i = int(np.argmin(np.abs(self.delay - t_val)))
-            if i in seen:
+            half = self.specOverlayHalf.get(t_val, 0)
+            if (i, half) in seen:
                 continue
-            seen.add(i)
-            idxs.append(i)
-            vals.append(float(self.delay[i]))
-        unit = self.t_unit_hdr()
-        headers = ['wavelength_nm'] + [
-            f'dA_t={v:.6g}{unit}' for v in vals]
-        arr = np.column_stack(
-            [self.wavelength] + [self.deltaA[:, i] for i in idxs])
+            seen.add((i, half))
+            hdr = f'dA_t={float(self.delay[i]):.6g}{unit}'
+            if half > 0:
+                lo, hi = ta_core.delay_gate(len(self.delay), i, half)
+                hdr += f'_avg_idx{lo}-{hi}'
+            headers.append(hdr)
+            cols.append(self._spec_trace(i, half)[0])
+        arr = np.column_stack(cols)
 
         suggested = f'{self._pin_export_basename()}_pinned_spectra.csv'
         path, _ = ask_save_path(self, 'Export pinned spectra',
@@ -2591,7 +2747,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             np.savetxt(path, arr, delimiter=',',
                        header=','.join(headers), comments='', fmt='%.6g')
             info_box(self, 'Export complete',
-                     f'Saved {len(idxs)} pinned spectrum(a) '
+                     f'Saved {len(cols) - 1} pinned spectrum(a) '
                      f'({len(self.wavelength)} wavelengths) to:\n{path}')
         except Exception as e:
             warn_box(self, 'Export error', f'Export failed:\n{e}')
@@ -2604,19 +2760,20 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             warn_box(self, 'No pinned kinetics',
                      'Pin one or more wavelengths before exporting.')
             return
-        seen, idxs, vals = set(), [], []
+        unit = self.t_unit_hdr()
+        seen, headers, cols = set(), [f'delay_{unit}'], [self.delay]
         for w_val in self.kinOverlays:
             i = int(np.argmin(np.abs(self.wavelength - w_val)))
-            if i in seen:
+            bw = self.kinOverlayBW.get(w_val, 0.0)
+            if (i, bw) in seen:
                 continue
-            seen.add(i)
-            idxs.append(i)
-            vals.append(float(self.wavelength[i]))
-        unit = self.t_unit_hdr()
-        headers = [f'delay_{unit}'] + [
-            f'dA_wl={v:.4g}nm' for v in vals]
-        arr = np.column_stack(
-            [self.delay] + [self.deltaA[i, :] for i in idxs])
+            seen.add((i, bw))
+            hdr = f'dA_wl={float(self.wavelength[i]):.4g}nm'
+            if bw > 0:
+                hdr += f'_BW{bw:g}nm'
+            headers.append(hdr)
+            cols.append(self._kin_trace(i, bw)[0])
+        arr = np.column_stack(cols)
 
         suggested = f'{self._pin_export_basename()}_pinned_kinetics.csv'
         path, _ = ask_save_path(self, 'Export pinned kinetics',
@@ -2627,7 +2784,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             np.savetxt(path, arr, delimiter=',',
                        header=','.join(headers), comments='', fmt='%.6g')
             info_box(self, 'Export complete',
-                     f'Saved {len(idxs)} pinned kinetic(s) '
+                     f'Saved {len(cols) - 1} pinned kinetic(s) '
                      f'({len(self.delay)} delays) to:\n{path}')
         except Exception as e:
             warn_box(self, 'Export error', f'Export failed:\n{e}')
@@ -2796,6 +2953,10 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                              if t_lo <= t <= t_hi]
         self.kinOverlays = [w for w in self.kinOverlays
                             if wl_lo <= w <= wl_hi]
+        self.specOverlayHalf = {t: h for t, h in self.specOverlayHalf.items()
+                                if t in self.specOverlays}
+        self.kinOverlayBW = {w: b for w, b in self.kinOverlayBW.items()
+                             if w in self.kinOverlays}
         self.selWL = float(np.clip(self.selWL, wl_lo, wl_hi))
         self.selT = float(np.clip(self.selT, t_lo, t_hi))
         # Re-snap selT to a measured delay inside the crop and update
