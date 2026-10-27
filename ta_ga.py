@@ -1848,34 +1848,85 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.canvas_kin_fit.draw_idle()
 
     # ---------- Exports ----------
+    @staticmethod
+    def _companion_path(path, kind):
+        """Path of the time-domain file written next to a spectra file:
+        ``…_spectra.csv`` → ``…_<kind>.csv`` (otherwise ``…_<kind>``
+        is appended to the stem)."""
+        stem, ext = os.path.splitext(path)
+        if stem.lower().endswith('_spectra'):
+            stem = stem[:-len('_spectra')]
+        return f'{stem}_{kind}{ext or ".csv"}'
+
+    @staticmethod
+    def _write_table(path, cols, header):
+        delim = ',' if path.lower().endswith('.csv') else '\t'
+        np.savetxt(path, np.column_stack(cols), delimiter=delim,
+                   header=delim.join(header), comments='', fmt='%.10g')
+
+    def _confirm_overwrite(self, path):
+        reply = QtWidgets.QMessageBox.question(
+            self, 'File exists',
+            f'{os.path.basename(path)} already exists.\nOverwrite it?')
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def _export_pair(self, path, spec_cols, spec_hdr, kind, time_table):
+        """Write a spectra file and its time-domain companion
+        (``_companion_path``).  ``time_table()`` returns (cols, header).
+
+        The save dialog already confirmed overwriting ``path``; the
+        companion is only asked about when it exists but ``path`` did
+        not (otherwise it belongs to the export being replaced).
+        Returns the companion path, or None when nothing / not all was
+        written (the error names any file already written)."""
+        path_t = self._companion_path(path, kind)
+        if (os.path.exists(path_t) and not os.path.exists(path)
+                and not self._confirm_overwrite(path_t)):
+            return None
+        done = []
+        try:
+            self._write_table(path, spec_cols, spec_hdr)
+            done.append(path)
+            self._write_table(path_t, *time_table())
+        except Exception as e:
+            msg = f'Export failed:\n{e}'
+            if done:
+                msg += '\n\nAlready written:\n' + '\n'.join(done)
+            warn_box(self, 'Export error', msg)
+            return None
+        return path_t
+
     def export_dads(self):
+        """DADS spectra + the matching component kinetics C_j(t) (the
+        curves of the DADS time panel) as two files."""
         app = self.app
         if app.ga_result_dads is None:
             warn_box(self, 'No results', 'Run the fit first.')
             return
-        nc = app.ga_result_dads.shape[1]
-        n_main = len(app.ga_result_tau)
-        header = ['wavelength_nm']
-        for ii in range(n_main):
-            header.append(
-                f'DADS_tau={app.ga_result_tau[ii]:.4g}_{app.t_unit_hdr()}')
+        u = app.t_unit_hdr()
+        names = [f'tau={tv:.4g}_{u}' for tv in app.ga_result_tau]
         if app.ga_result_has_inf:
-            header.append('DADS_tau=inf')
-        mat = np.column_stack([app.wavelength, app.ga_result_dads])
+            names.append('tau=inf')
         path, _ = ask_save_path(self, 'Export DADS',
-                                app.default_save_path('DADS.csv'))
+                                app.default_save_path('DADS_spectra.csv'))
         if not path:
             return
-        delim = ',' if path.lower().endswith('.csv') else '\t'
-        try:
-            np.savetxt(path, mat, delimiter=delim,
-                       header=delim.join(header), comments='',
-                       fmt='%.10g')
-            info_box(self, 'DADS exported', f'Saved: {path}')
-        except Exception as e:
-            warn_box(self, 'Export error', f'Export failed:\n{e}')
+
+        def kinetics():
+            t, C = self._time_profiles()
+            return [t, C], [f'delay_{u}'] + [f'C_{n}' for n in names]
+
+        path_t = self._export_pair(
+            path, [app.wavelength, app.ga_result_dads],
+            ['wavelength_nm'] + [f'DADS_{n}' for n in names],
+            'kinetics', kinetics)
+        if path_t:
+            info_box(self, 'DADS exported',
+                     f'Spectra:  {path}\nKinetics: {path_t}')
 
     def export_eads(self):
+        """EADS spectra + the sequential-model populations c_S(t) (the
+        curves of the EADS time panel) as two files."""
         app = self.app
         if app.ga_result_eads is None:
             warn_box(self, 'No results',
@@ -1883,29 +1934,31 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                      'yet, or the B matrix was singular (near-degenerate '
                      'lifetimes).')
             return
-        n_decay = len(app.ga_result_tau)
+        u = app.t_unit_hdr()
         n_tot = app.ga_result_eads.shape[1]
-        tau_sorted = np.sort(app.ga_result_tau)
-        header = ['wavelength_nm']
-        for ii in range(n_decay):
-            header.append(
-                f'EADS_S{ii+1}_tau={tau_sorted[ii]:.4g}_{app.t_unit_hdr()}')
+        names = [f'S{ii + 1}_tau={tv:.4g}_{u}'
+                 for ii, tv in enumerate(np.sort(app.ga_result_tau))]
         if app.ga_result_has_inf:
-            header.append(f'EADS_S{n_tot}_tau=inf')
-        mat = np.column_stack([app.wavelength, app.ga_result_eads])
+            names.append(f'S{n_tot}_tau=inf')
         path, _ = ask_save_path(self, 'Export EADS',
-                                app.default_save_path('EADS.csv'))
+                                app.default_save_path('EADS_spectra.csv'))
         if not path:
             return
-        delim = ',' if path.lower().endswith('.csv') else '\t'
-        try:
-            np.savetxt(path, mat, delimiter=delim,
-                       header=delim.join(header), comments='', fmt='%.10g')
+
+        def populations():
+            t, C = self._time_profiles()
+            P = ta_core.sequential_populations(C, app.ga_result_tau,
+                                               app.ga_result_has_inf)
+            return [t, P], [f'delay_{u}'] + [f'pop_{n}' for n in names]
+
+        path_t = self._export_pair(
+            path, [app.wavelength, app.ga_result_eads],
+            ['wavelength_nm'] + [f'EADS_{n}' for n in names],
+            'populations', populations)
+        if path_t:
             info_box(self, 'EADS exported',
                      f'Saved EADS (sequential, {n_tot} species).\n\n'
-                     f'File: {path}')
-        except Exception as e:
-            warn_box(self, 'Export error', f'Export failed:\n{e}')
+                     f'Spectra:     {path}\nPopulations: {path_t}')
 
     def export_matrix_2d(self, which, label, tag):
         app = self.app

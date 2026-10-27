@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.6.0** (latest) | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
+| **v1.7.0** (latest) | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
+| v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
@@ -33,7 +34,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.6.0      # latest (same as main)
+git checkout v1.7.0      # latest (same as main)
+git checkout v1.6.0      # before DADS/EADS time-data export
 git checkout v1.5.0      # before Crop memory / CSV
 git checkout v1.4.0      # before the DADS/EADS time panels
 git checkout v1.3.0      # before fit statistics / pin import
@@ -215,6 +217,14 @@ The DADS and EADS rows of the Global Analysis results now end with a delay-axis 
 
 - Curves use the fitted t₀, FWHM, τ and β on a dense grid over the fit window (denser over the IRF rise) that also contains the measured delays.
 - The x axis follows the **Scale** (Log/Linear) selector of the kinetics plot below, and **Show components** hides curves in the time plots too.
+- The **Export: DADS / EADS** buttons save two files (v1.7.0), always with every component, including hidden ones.
+
+| Button | Spectra file | Time file |
+|---|---|---|
+| DADS | `DADS_spectra.csv` (`wavelength_nm`, `DADS_tau=…`) | `DADS_kinetics.csv` (`delay_ps`, `C_tau=…`) |
+| EADS | `EADS_spectra.csv` (`wavelength_nm`, `EADS_S1_tau=…`) | `EADS_populations.csv` (`delay_ps`, `pop_S1_tau=…`) |
+
+  The time files use the plotted grid (measured delays + fill points + IRF rise). Renaming the file in the save dialog renames its companion too (e.g. `sample_DADS_spectra.csv` → `sample_DADS_kinetics.csv`). If only the companion already exists, you are asked before it is overwritten.
 
 ## 6. Input file formats
 
@@ -262,6 +272,9 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.7.0** (2026-10-27)
+- Global Analysis Export **DADS**: `DADS_spectra.csv` + `DADS_kinetics.csv` (component kinetics C(t)); **EADS**: `EADS_spectra.csv` + `EADS_populations.csv` (sequential populations)
 
 **v1.6.0** (2026-10-27)
 - Crop window: pinned delays / wavelengths and the interpolation method are remembered (reset only when new data is loaded)

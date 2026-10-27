@@ -9,11 +9,14 @@ Verifies:
   2. GA dialog: the DADS row shows C_j(t), the EADS row c_S(t);
      DADS·C(t) at the fitted delays reproduces the global fit; component
      check-boxes hide curves; the Scale selector switches log / linear
+  3. Export DADS / EADS writes spectra and time files side by side
+     (DADS_spectra + DADS_kinetics, EADS_spectra + EADS_populations)
 """
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -100,6 +103,8 @@ def test_dialog():
     y = np.asarray(ga.ax_eads_t.get_lines()[0].get_ydata())
     assert np.allclose(y, P[:, 0])
 
+    _check_exports(ga, win)
+
     ga.cb_comps[0].setChecked(False)                          # hide τ₁
     assert len(ga.ax_dads_t.get_lines()) == 2 + 1
     ga.dd_kin_scale.setCurrentText('Linear')
@@ -114,6 +119,84 @@ def test_dialog():
     ga.close()
     win.close()
     print('[ok] GA dialog time panels')
+
+
+def _export(ga, fn, path):
+    orig_ask, orig_info = ta_ga.ask_save_path, ta_ga.info_box
+    ta_ga.ask_save_path = lambda *a, **k: (path, '')
+    ta_ga.info_box = lambda *a, **k: None
+    try:
+        fn()
+    finally:
+        ta_ga.ask_save_path, ta_ga.info_box = orig_ask, orig_info
+
+
+def _load(path):
+    with open(path, encoding='utf-8') as f:
+        header = f.readline().strip().split(',')
+    return header, np.loadtxt(path, delimiter=',', skiprows=1)
+
+
+def _check_exports(ga, win):
+    """Both buttons write a spectra file and its time-domain companion
+    (all components, independent of the Show-components boxes)."""
+    t, C = ga._time_profiles()
+    P = ta_core.sequential_populations(C, win.ga_result_tau, True)
+    with tempfile.TemporaryDirectory() as tmp:
+        _export(ga, ga.export_dads, os.path.join(tmp, 'DADS_spectra.csv'))
+        _export(ga, ga.export_eads, os.path.join(tmp, 'EADS_spectra.csv'))
+        assert sorted(os.listdir(tmp)) == [
+            'DADS_kinetics.csv', 'DADS_spectra.csv',
+            'EADS_populations.csv', 'EADS_spectra.csv']
+        hdr, M = _load(os.path.join(tmp, 'DADS_spectra.csv'))
+        assert hdr[0] == 'wavelength_nm' and hdr[1].startswith('DADS_tau=')
+        assert hdr[-1] == 'DADS_tau=inf'
+        assert np.allclose(M[:, 1:], win.ga_result_dads, rtol=1e-8)
+        hdr, M = _load(os.path.join(tmp, 'DADS_kinetics.csv'))
+        assert hdr[0] == 'delay_ps' and hdr[1].startswith('C_tau=')
+        assert len(hdr) == 1 + C.shape[1] and hdr[-1] == 'C_tau=inf'
+        assert np.allclose(M[:, 0], t) and np.allclose(M[:, 1:], C, atol=1e-9)
+        hdr, M = _load(os.path.join(tmp, 'EADS_spectra.csv'))
+        assert hdr[0] == 'wavelength_nm' and hdr[1].startswith('EADS_S1_tau=')
+        assert np.allclose(M[:, 1:], win.ga_result_eads, rtol=1e-8)
+        hdr, M = _load(os.path.join(tmp, 'EADS_populations.csv'))
+        assert hdr[0] == 'delay_ps' and hdr[1].startswith('pop_S1_tau=')
+        assert hdr[-1] == 'pop_S3_tau=inf'
+        assert np.allclose(M[:, 1:], P, atol=1e-9)
+        # A renamed spectra file keeps its companion next to it
+        _export(ga, ga.export_dads, os.path.join(tmp, 'run2_DADS_spectra.csv'))
+        _export(ga, ga.export_eads, os.path.join(tmp, 'other.csv'))
+        names = set(os.listdir(tmp))
+        assert {'run2_DADS_kinetics.csv', 'other_populations.csv'} <= names
+    assert ga._companion_path('x/A.tsv', 'kinetics') == 'x/A_kinetics.tsv'
+
+    # Existing companion of a NEW spectra file: asked; "No" writes nothing
+    with tempfile.TemporaryDirectory() as tmp:
+        comp = os.path.join(tmp, 'DADS_kinetics.csv')
+        open(comp, 'w').write('keep')
+        asked = []
+        ga._confirm_overwrite = lambda p: asked.append(p) or False
+        _export(ga, ga.export_dads, os.path.join(tmp, 'DADS_spectra.csv'))
+        assert asked == [comp] and os.listdir(tmp) == ['DADS_kinetics.csv']
+        assert open(comp).read() == 'keep'
+        # Re-export over an existing pair (dialog confirmed): no question
+        ga._confirm_overwrite = lambda p: True
+        _export(ga, ga.export_dads, os.path.join(tmp, 'DADS_spectra.csv'))
+        asked.clear()
+        ga._confirm_overwrite = lambda p: asked.append(p) or False
+        _export(ga, ga.export_dads, os.path.join(tmp, 'DADS_spectra.csv'))
+        assert asked == [] and open(comp).read() != 'keep'
+        # A failing time table reports the spectra file already written
+        warned = []
+        orig_warn, orig_tp = ta_ga.warn_box, ga._time_profiles
+        ta_ga.warn_box = lambda *a, **k: warned.append(a[2])
+        ga._time_profiles = lambda: (_ for _ in ()).throw(RuntimeError('x'))
+        try:
+            _export(ga, ga.export_eads, os.path.join(tmp, 'EADS_spectra.csv'))
+        finally:
+            ta_ga.warn_box, ga._time_profiles = orig_warn, orig_tp
+        assert len(warned) == 1 and 'EADS_spectra.csv' in warned[0]
+    del ga._confirm_overwrite
 
 
 TESTS = [test_core, test_dialog]

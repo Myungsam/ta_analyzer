@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.6.0** (최신) | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
+| **v1.7.0** (최신) | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
+| v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
@@ -33,7 +34,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.6.0      # 최신 버전 (main과 같음)
+git checkout v1.7.0      # 최신 버전 (main과 같음)
+git checkout v1.6.0      # DADS/EADS 시간 데이터 export 이전
 git checkout v1.5.0      # Crop 설정 기억·CSV 이전
 git checkout v1.4.0      # DADS/EADS 시간 패널 이전
 git checkout v1.3.0      # fit 통계·pin import 이전
@@ -215,6 +217,14 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 
 - 피팅에 쓴 t₀, FWHM, τ, β로 fit 구간 전체를 촘촘히 계산하고(IRF 상승 구간은 더 촘촘히), 실제 측정 delay 점도 포함합니다.
 - x축은 아래 kinetics 그래프의 **Scale**(Log/Linear) 선택을 따르고, **Show components** 체크박스로 성분을 숨기면 시간 그래프에서도 숨겨집니다.
+- **Export: DADS / EADS** 버튼은 파일 두 개를 저장합니다(v1.7.0). 숨긴 성분도 모두 포함됩니다.
+
+| 버튼 | 스펙트럼 파일 | 시간 파일 |
+|---|---|---|
+| DADS | `DADS_spectra.csv` (`wavelength_nm`, `DADS_tau=…`) | `DADS_kinetics.csv` (`delay_ps`, `C_tau=…`) |
+| EADS | `EADS_spectra.csv` (`wavelength_nm`, `EADS_S1_tau=…`) | `EADS_populations.csv` (`delay_ps`, `pop_S1_tau=…`) |
+
+  시간 파일은 그래프와 같은 격자(측정 delay + 채움 점 + IRF 상승부)입니다. 저장 창에서 이름을 바꾸면 짝 파일도 따라갑니다(예: `sample_DADS_spectra.csv` → `sample_DADS_kinetics.csv`). 스펙트럼 파일은 새로 만드는데 짝 파일만 이미 있으면 덮어쓸지 한 번 더 묻습니다.
 
 ## 6. 입력 파일 형식
 
@@ -262,6 +272,9 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.7.0** (2026-10-27)
+- Global Analysis Export **DADS**: `DADS_spectra.csv` + `DADS_kinetics.csv`(성분 kinetics C(t)), **EADS**: `EADS_spectra.csv` + `EADS_populations.csv`(순차 모델 population)
 
 **v1.6.0** (2026-10-27)
 - Crop 창: Pinned delays / Pinned wavelengths와 보간 방법을 기억 (새 데이터를 불러올 때만 초기화)
