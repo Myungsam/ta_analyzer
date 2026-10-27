@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.4.0** (최신) | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
+| **v1.5.0** (최신) | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
+| v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Crop Data에 파장축 Resampling(Average / Decimate) 추가, 한/영 사용 설명서 |
@@ -31,7 +32,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.4.0      # 최신 버전 (main과 같음)
+git checkout v1.5.0      # 최신 버전 (main과 같음)
+git checkout v1.4.0      # DADS/EADS 시간 패널 이전
 git checkout v1.3.0      # fit 통계·pin import 이전
 git checkout v1.2.0      # 구간 평균(Integrate) 이전
 git checkout v1.1.0      # Moving average 이전
@@ -134,7 +136,7 @@ python ta_main.py
 ### 5.4 분석
 | 메뉴 | 내용 |
 |---|---|
-| **Global Analysis** | 여러 지수 함수 ⊗ Gaussian IRF를 전체 행렬에 피팅합니다(τ 고정, stretched β, τ=∞ 성분, 피팅 구간 지정). 결과: τ ± σ, DADS, EADS, fit, residual, fit 통계(5.7절). TensorFlow가 있으면 GPU 선택 가능 |
+| **Global Analysis** | 여러 지수 함수 ⊗ Gaussian IRF를 전체 행렬에 피팅합니다(τ 고정, stretched β, τ=∞ 성분, 피팅 구간 지정). 결과: τ ± σ, DADS·EADS와 각각의 시간 영역 결과(5.8절), fit, residual, fit 통계(5.7절). TensorFlow가 있으면 GPU 선택 가능 |
 | **SVD** | 특이값 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
 | **Kinetic Fit** | 한 파장(또는 파장 구간 평균) trace, 또는 main 창에서 pin한 kinetics 여러 개를 multi-exp ⊗ IRF로 피팅(여러 개면 global fit). τ·A ± σ, population ratio, fit 통계(5.7절) |
 | **LDA** | Tikhonov 정규화 lifetime density 맵, L-curve로 α 선택 |
@@ -184,6 +186,18 @@ Spectrum과 Kinetics 패널 아랫줄의 **Integrate** 체크박스를 켜면 �
 
 ![Global Analysis statistics](docs/images/ga_stats.png)
 
+### 5.8 DADS / EADS 시간 영역 결과 (v1.5.0)
+
+Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) 축 그래프가 추가됩니다.
+
+| 줄 | 왼쪽 → 오른쪽 | 시간 그래프 내용 |
+|---|---|---|
+| DADS | DADS · DADS(정규화) · **DADS kinetics C(t)** | 병렬 모델의 성분별 kinetics `C_j(t) = exp(−t/τ_j) ⊗ IRF` (stretched 성분은 β 반영, τ=∞는 step). 진폭 1 기준 |
+| EADS | EADS · EADS(정규화) · **EADS populations c(t)** | 순차 모델 S₁ → S₂ → … 의 종(species)별 population. `DADS·C(t)ᵀ = EADS·c(t)ᵀ`이므로 두 줄은 같은 fit을 다르게 나눈 것입니다 |
+
+- 피팅에 쓴 t₀, FWHM, τ, β로 fit 구간 전체를 촘촘히 계산하고(IRF 상승 구간은 더 촘촘히), 실제 측정 delay 점도 포함합니다.
+- x축은 아래 kinetics 그래프의 **Scale**(Log/Linear) 선택을 따르고, **Show components** 체크박스로 성분을 숨기면 시간 그래프에서도 숨겨집니다.
+
 ## 6. 입력 파일 형식
 
 CSV / TSV / DAT / TXT를 자동으로 읽습니다(구분자 자동 인식, 빈 칸과 NaN 처리).
@@ -221,6 +235,7 @@ corner, t1, t2, ..., tN
   python test/test_crop_moving_average.py
   python test/test_pin_gating.py
   python test/test_fit_stats_kfit_import.py
+  python test/test_ga_time_panels.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
@@ -228,6 +243,10 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.5.0** (2026-10-27)
+- Global Analysis: DADS 줄에 성분 kinetics C(t) ⊗ IRF, EADS 줄에 순차 모델 population c(t) 그래프 추가 (Scale·Show components 연동)
+- DADS/EADS 그래프 제목을 3열 배치에 맞게 줄임
 
 **v1.4.0** (2026-10-27)
 - Global Analysis: τ·β·t₀·FWHM의 1σ 표준편차와 Fit statistics(R², Adjusted R², Reduced χ², RSS, RMS, AIC/BIC, 자유도) 표시

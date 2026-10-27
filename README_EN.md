@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.4.0** (latest) | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
+| **v1.5.0** (latest) | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
+| v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
 | v1.1.0 | [`v1.1.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.1.0) | Wavelength resampling (Average / Decimate) in Crop Data, Korean/English user guide |
@@ -31,7 +32,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.4.0      # latest (same as main)
+git checkout v1.5.0      # latest (same as main)
+git checkout v1.4.0      # before the DADS/EADS time panels
 git checkout v1.3.0      # before fit statistics / pin import
 git checkout v1.2.0      # before Integrate
 git checkout v1.1.0      # before moving average
@@ -134,7 +136,7 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 ### 5.4 Analysis
 | Menu | Description |
 |---|---|
-| **Global Analysis** | Fits a sum of exponentials ⊗ Gaussian IRF to the whole matrix (fixed τ, stretched β, τ=∞ component, fit window). Results: τ ± σ, DADS, EADS, fit, residual, fit statistics (section 5.7). GPU selectable when TensorFlow is installed |
+| **Global Analysis** | Fits a sum of exponentials ⊗ Gaussian IRF to the whole matrix (fixed τ, stretched β, τ=∞ component, fit window). Results: τ ± σ, DADS and EADS with their time-domain results (section 5.8), fit, residual, fit statistics (section 5.7). GPU selectable when TensorFlow is installed |
 | **SVD** | Singular value spectrum, U/V vectors, rank-N reconstruction and residual |
 | **Kinetic Fit** | Fits one wavelength (or a wavelength-window average), or several kinetics pinned in the main window, with multi-exp ⊗ IRF (global fit for several). τ and A ± σ, population ratio, fit statistics (section 5.7) |
 | **LDA** | Tikhonov-regularized lifetime density map, L-curve for choosing α |
@@ -184,6 +186,18 @@ The **Global Analysis result pane** now shows:
 
 ![Global Analysis statistics](docs/images/ga_stats.png)
 
+### 5.8 DADS / EADS time-domain results (v1.5.0)
+
+The DADS and EADS rows of the Global Analysis results now end with a delay-axis plot.
+
+| Row | Left → right | Time plot |
+|---|---|---|
+| DADS | DADS · DADS (normalized) · **DADS kinetics C(t)** | Parallel-model kinetics of each component, `C_j(t) = exp(−t/τ_j) ⊗ IRF` (β for stretched components, a step for τ=∞), unit amplitude |
+| EADS | EADS · EADS (normalized) · **EADS populations c(t)** | Species populations of the sequential model S₁ → S₂ → …. Since `DADS·C(t)ᵀ = EADS·c(t)ᵀ`, both rows split the same fit in two ways |
+
+- Curves use the fitted t₀, FWHM, τ and β on a dense grid over the fit window (denser over the IRF rise) that also contains the measured delays.
+- The x axis follows the **Scale** (Log/Linear) selector of the kinetics plot below, and **Show components** hides curves in the time plots too.
+
 ## 6. Input file formats
 
 CSV / TSV / DAT / TXT are read automatically (delimiter detection, blanks and NaN handled).
@@ -221,6 +235,7 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   python test/test_crop_moving_average.py
   python test/test_pin_gating.py
   python test/test_fit_stats_kfit_import.py
+  python test/test_ga_time_panels.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
@@ -228,6 +243,10 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.5.0** (2026-10-27)
+- Global Analysis: component kinetics C(t) ⊗ IRF next to DADS and sequential populations c(t) next to EADS (linked to Scale and Show components)
+- Shorter DADS/EADS titles for the three-column layout
 
 **v1.4.0** (2026-10-27)
 - Global Analysis: 1σ standard deviations of τ, β, t₀ and FWHM, plus fit statistics (R², adjusted R², reduced χ², RSS, RMS, AIC/BIC, degrees of freedom)

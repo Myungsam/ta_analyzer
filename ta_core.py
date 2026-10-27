@@ -1177,14 +1177,22 @@ def exp_irf_conv(t: np.ndarray, tau: float, t0: float, fwhm: float) -> np.ndarra
 
 
 def build_ga_basis(t: np.ndarray, tau_vec, t0: float, fwhm: float,
-                   has_inf: bool) -> np.ndarray:
-    """Build the (N_t x k) basis matrix of IRF-convolved exponentials."""
+                   has_inf: bool, beta=None, stretch_on=None,
+                   irf_mode: str = 'numerical') -> np.ndarray:
+    """Build the (N_t x k) basis matrix of IRF-convolved exponentials.
+
+    Columns with ``stretch_on[j]`` use the stretched exponential with
+    ``beta[j]`` (see :func:`stretched_irf_conv`)."""
     tau_vec = np.asarray(tau_vec, float).ravel()
     k = len(tau_vec) + (1 if has_inf else 0)
     t_arr = np.asarray(t, float).ravel()
     C = np.zeros((len(t_arr), k))
     for j, tau in enumerate(tau_vec):
-        C[:, j] = exp_irf_conv(t_arr, tau, t0, fwhm)
+        if stretch_on is not None and stretch_on[j]:
+            C[:, j] = stretched_irf_conv(t_arr, tau, beta[j], t0, fwhm,
+                                         irf_mode)
+        else:
+            C[:, j] = exp_irf_conv(t_arr, tau, t0, fwhm)
     if has_inf:
         C[:, -1] = exp_irf_conv(t_arr, np.inf, t0, fwhm)
     return C
@@ -1450,19 +1458,9 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
 
     def build_basis_local(tau_v, beta_v, t0_v, fwhm_v):
         """Build (N, n_cols) basis with mixed exp / stretched columns."""
-        if not any_stretched:
-            return build_ga_basis(t_arr, tau_v, t0_v, fwhm_v, has_inf)
-        n_cols = n_nl + (1 if has_inf else 0)
-        C = np.zeros((N, n_cols))
-        for j in range(n_nl):
-            if stretch_on[j]:
-                C[:, j] = stretched_irf_conv(
-                    t_arr, tau_v[j], beta_v[j], t0_v, fwhm_v, irf_mode)
-            else:
-                C[:, j] = exp_irf_conv(t_arr, tau_v[j], t0_v, fwhm_v)
-        if has_inf:
-            C[:, -1] = exp_irf_conv(t_arr, np.inf, t0_v, fwhm_v)
-        return C
+        return build_ga_basis(t_arr, tau_v, t0_v, fwhm_v, has_inf, beta_v,
+                              stretch_on if any_stretched else None,
+                              irf_mode)
 
     # Route the two hot linear-algebra kernels (lstsq + reconstruction
     # matmul) through the user-selected backend when one is supplied.
@@ -1733,6 +1731,23 @@ def compute_eads_from_dads(DADS: np.ndarray, tau_vec, has_inf: bool):
         EADS = DADS_perm @ np.linalg.pinv(Bmat)
 
     return EADS, tau_sorted, Bmat
+
+
+def sequential_populations(C: np.ndarray, tau_vec, has_inf: bool):
+    """Species populations c_S(t) of the sequential model behind
+    :func:`compute_eads_from_dads`.
+
+    ``C`` (N_t, k) is the parallel basis in fit order (as from
+    :func:`build_ga_basis`).  Since ``DADS·Cᵀ = EADS·(B·C_permᵀ)``, species
+    i follows ``Σⱼ B[i, j]·C_perm[:, j]``.  Returns (N_t, k) in EADS
+    column order (ascending τ, then the τ = ∞ species)."""
+    tau_vec = np.asarray(tau_vec, float).ravel()
+    perm = np.argsort(tau_vec)
+    if has_inf:
+        perm = np.concatenate([perm, [len(tau_vec)]])
+    _, _, B = compute_eads_from_dads(np.zeros((1, C.shape[1])), tau_vec,
+                                     has_inf)
+    return C[:, perm] @ B.T
 
 # =====================================================================
 # Stretched exponential (Kohlrausch) and IRF convolution

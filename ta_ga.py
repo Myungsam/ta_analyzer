@@ -271,14 +271,16 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.ax_exp, self.ax_fit_map, self.ax_res = self.canvas_maps.axes_list
         rL.addWidget(self.canvas_maps.with_toolbar(self), stretch=2)
 
-        # Row 2: DADS + DADS-normalized
-        self.canvas_dads = MplCanvas(self, nrows=1, ncols=2, figsize=(14, 3))
-        self.ax_dads, self.ax_dads_n = self.canvas_dads.axes_list
+        # Row 2: DADS + DADS-normalized + component kinetics C_j(t)
+        self.canvas_dads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
+        self.ax_dads, self.ax_dads_n, self.ax_dads_t = \
+            self.canvas_dads.axes_list
         rL.addWidget(self.canvas_dads, stretch=1)
 
-        # Row 3: EADS + EADS-normalized
-        self.canvas_eads = MplCanvas(self, nrows=1, ncols=2, figsize=(14, 3))
-        self.ax_eads, self.ax_eads_n = self.canvas_eads.axes_list
+        # Row 3: EADS + EADS-normalized + species populations c_S(t)
+        self.canvas_eads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
+        self.ax_eads, self.ax_eads_n, self.ax_eads_t = \
+            self.canvas_eads.axes_list
         rL.addWidget(self.canvas_eads, stretch=1)
 
         # Row 4: component visibility checkboxes (built after fit)
@@ -508,6 +510,8 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.btn_use_main.clicked.connect(self.sync_kin_wl_from_main)
         self.ed_kin_wl.valueChanged.connect(self.on_kin_wl_change)
         self.dd_kin_scale.currentTextChanged.connect(self.plot_kinetics)
+        # The time panels of the DADS / EADS rows share this scale
+        self.dd_kin_scale.currentTextChanged.connect(self.on_comp_vis)
         self.tau_table.cellChanged.connect(self._on_tau_edit)
         # t-range edits: keep the live point-count label fresh; the
         # "Full" button restores the full delay extent.
@@ -1342,6 +1346,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             'stretch_on', np.zeros_like(res['tau'], bool))
         app.ga_result_t0 = res['t0']
         app.ga_result_fwhm = res['fwhm']
+        app.ga_result_irf_mode = app.ga_irf_mode
         app.ga_result_has_inf = app.ga_has_inf
         app.ga_result_dads = res['A']
         # Keep the (sub-)delay axis used for the fit so the display
@@ -1549,8 +1554,8 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel(r'Amplitude $(\Delta A)$')
-        ax.set_title(f'Decay-associated difference spectra '
-                     f'(RMS = {app.ga_result_rms:.3g})')
+        ax.set_title(f'DADS  (RMS = {app.ga_result_rms:.3g})',
+                     fontsize=10)
         ax.legend(loc='best', fontsize=8)
         ax.set_xlim(app.wavelength.min(), app.wavelength.max())
 
@@ -1570,22 +1575,34 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
-        ax.set_ylabel('Normalized amplitude')
-        ax.set_title('DADS (peak-normalized)')
+        ax.set_ylabel('Normalized')
+        ax.set_title('DADS (peak-normalized)', fontsize=10)
         ax.legend(loc='best', fontsize=8)
         ax.set_xlim(app.wavelength.min(), app.wavelength.max())
         ax.set_ylim(-1.1, 1.1)
+
+        # Time: parallel-model component kinetics C_j(t) (unit amplitude)
+        ax = self.ax_dads_t
+        ax.clear()
+        t, C = self._time_profiles()
+        for ii in range(nc):
+            if vis[ii]:
+                ax.plot(t, C[:, ii], '-', color=cmap(ii), linewidth=1.4,
+                        label=(rf'τ_{ii+1}' if ii < n_main else r'τ = ∞'))
+        self._style_time_axis(ax, t, 'DADS kinetics  C(t) ⊗ IRF',
+                              'Amplitude')
         self.canvas_dads.draw_idle()
 
     def plot_eads(self):
         app = self.app
         self.ax_eads.clear()
         self.ax_eads_n.clear()
+        self.ax_eads_t.clear()
         if app.ga_result_eads is None:
-            self.ax_eads.set_title(
-                'Evolution-associated difference spectra '
-                '(sequential) — run fit to compute')
+            self.ax_eads.set_title('EADS (sequential) — run fit',
+                                   fontsize=10)
             self.ax_eads_n.set_title('EADS (peak-normalized)')
+            self.ax_eads_t.set_title('Populations (sequential)')
             self.canvas_eads.draw_idle()
             return
 
@@ -1619,8 +1636,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel(r'Amplitude $(\Delta A)$')
-        ax.set_title(r'Evolution-associated difference spectra '
-                     r'(sequential: S₁ → S₂ → …)')
+        ax.set_title('EADS  (sequential S₁ → S₂ → …)', fontsize=10)
         ax.legend(loc='best', fontsize=8)
         ax.set_xlim(app.wavelength.min(), app.wavelength.max())
 
@@ -1640,12 +1656,71 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
-        ax.set_ylabel('Normalized amplitude')
-        ax.set_title('EADS (peak-normalized)')
+        ax.set_ylabel('Normalized')
+        ax.set_title('EADS (peak-normalized)', fontsize=10)
         ax.legend(loc='best', fontsize=8)
         ax.set_xlim(app.wavelength.min(), app.wavelength.max())
         ax.set_ylim(-1.1, 1.1)
+
+        # Time: sequential species populations c_S(t)
+        ax = self.ax_eads_t
+        t, C = self._time_profiles()
+        P = ta_core.sequential_populations(C, app.ga_result_tau,
+                                           app.ga_result_has_inf)
+        for iS in range(nc):
+            fit_idx = perm_fit[iS]
+            if fit_idx < len(vis) and not vis[fit_idx]:
+                continue
+            ax.plot(t, P[:, iS], '-', color=cmap(fit_idx), linewidth=1.4,
+                    label=rf'S_{iS+1}')
+        self._style_time_axis(ax, t, 'EADS populations  c(t)',
+                              'Population')
         self.canvas_eads.draw_idle()
+
+    def _time_profiles(self):
+        """Fitted time basis on a dense grid over the fit window:
+        returns (t, C) with C[:, j] = component j (exp or stretched ⊗ IRF,
+        τ = ∞ last), the same columns the global fit used."""
+        app = self.app
+        t_fit = (app.ga_result_delay if app.ga_result_delay is not None
+                 else app.delay)
+        lo, hi = float(np.min(t_fit)), float(np.max(t_fit))
+        # Fitted delays + uniform/log fill + a fine grid over the IRF rise
+        t0, fw = app.ga_result_t0, app.ga_result_fwhm
+        rise = np.linspace(t0 - 5 * fw, t0 + 5 * fw, 200)
+        grid = [t_fit, np.linspace(lo, hi, 600),
+                rise[(rise >= lo) & (rise <= hi)]]
+        pos = t_fit[t_fit > 0]
+        if pos.size and hi > pos.min():
+            grid.append(np.geomspace(pos.min(), hi, 600))
+        t = np.unique(np.concatenate(grid))
+        C = ta_core.build_ga_basis(
+            t, app.ga_result_tau, app.ga_result_t0, app.ga_result_fwhm,
+            app.ga_result_has_inf, app.ga_result_beta,
+            app.ga_result_stretch_on, app.ga_result_irf_mode)
+        return t, C
+
+    def _style_time_axis(self, ax, t, title, ylabel):
+        """Shared look of the DADS / EADS time panels (x scale follows
+        the kinetics Scale selector)."""
+        app = self.app
+        t_meas = (app.ga_result_delay if app.ga_result_delay is not None
+                  else app.delay)
+        pos = t_meas[t_meas > 0]
+        if self.dd_kin_scale.currentText() == 'Log' and pos.size:
+            # Start at the first measured positive delay, not at the
+            # dense grid's tiny positive points.
+            ax.set_xscale('log')
+            ax.set_xlim(pos.min(), t.max())
+        else:
+            ax.set_xscale('linear')
+            ax.set_xlim(t.min(), t.max())
+        ax.axhline(0, color='k', linestyle=':')
+        ax.grid(True)
+        ax.set_xlabel(f'Delay time ({self.app.t_unit_ax()})')
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=10)
+        ax.legend(loc='best', fontsize=8)
 
     def plot_maps(self):
         app = self.app

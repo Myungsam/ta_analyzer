@@ -53,7 +53,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | 계층 | 모듈 | 줄 수 | 역할 |
 |---|---|---:|---|
 | **Entry / Shell** | `ta_main.py` | 3,373 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
-| **Numerical core** | `ta_core.py` | 2,371 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), fit 통계·1σ(`varpro_stats`, `nl_param_std`, `format_fit_stats`, `population_ratio`), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
+| **Numerical core** | `ta_core.py` | 2,391 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), fit 통계·1σ(`varpro_stats`, `nl_param_std`, `format_fit_stats`, `population_ratio`), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
 | | `ta_lpsvd.py` | 525 | LPSVD(Lorentzian)와 Gaussian 감쇠 진동자 모드 분해 (1D 시계열) |
 | **Infra / Service** | `ta_residual_store.py` | 369 | GA/LDA residual을 `residuals/*.xlsx`로 저장하고, 목록 조회·로드 (CSV도 로드 가능) |
 | | `ta_device.py` | 725 | TensorFlow 장치 목록, `TFBackend`(lstsq/matmul), GPU 상태(pynvml/nvidia-smi), 팬 제어, keep-warm 스레드, 관리자 권한 재실행 |
@@ -64,7 +64,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | **Correction dialogs** | `ta_dialogs_a.py` | 1,808 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
 | | `ta_chirp.py` | 446 | `ChirpDialog`: 클릭 또는 ridge 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
-| **Analysis dialogs** | `ta_ga.py` | 1,900 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
+| **Analysis dialogs** | `ta_ga.py` | 1,969 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
 | | `ta_svd.py` | 419 | `SVDDialog`: σ 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
 | | `ta_kfit.py` | 690 | `KineticFitDialog`: Import 버튼으로 trace 반입(main 창 pin된 kinetics 또는 단일 λ/λ 창 평균). 여러 개면 global fit, 1개면 단일 fit. σ, population ratio, fit 통계 |
 | | `ta_lda.py` | 471 | `LDADialog`: Tikhonov 정규화 lifetime density, L-curve |
@@ -235,6 +235,7 @@ deltaA  ──► 2D map / Spectrum / Kinetics / 모든 분석
 - **VARPRO**: 비선형 파라미터(log τ, log β, t₀, log FWHM)는 `least_squares(method='trf')`로 최적화합니다. 기본값이며 `'nm'`을 고르면 Nelder-Mead를 씁니다. 진폭 A는 매 반복마다 선형 최소제곱(`lstsq`)으로 바로 풉니다. Fixed 플래그로 파라미터를 고정할 수 있습니다.
 - **Fit window**: `ga_t_min`~`ga_t_max`로 delay를 잘라 피팅합니다. 필요한 최소 점 수는 3 + N_τ (+1)입니다. 결과는 잘린 축(`ga_result_delay`) 기준으로 저장합니다.
 - **통계**: `fit_global_analysis(..., compute_stats=True)`가 `info['stats']`를 채웁니다. `varpro_stats`가 최적점에서 ∂fit/∂x(중앙차분)로 Schur complement S = Σᵢ Jᵢᵀ(I−Pᵢ)Jᵢ를 만들어 진폭을 profile out한 비선형 파라미터 공분산 s²S⁻¹을 구하고(s² = RSS/dof), block inverse로 진폭 σ도 계산합니다. `nl_param_std`가 log 공간 σ를 delta method로 τ·β·FWHM σ로 바꿉니다. R², adj. R², χ²_red, AIC/BIC, trace별 R²도 함께 반환합니다. 결과 창은 `format_fit_stats`로 표시하고 `app.ga_result_stats`에 보관합니다.
+- **시간 패널** (v1.5.0): DADS 줄 오른쪽에 `build_ga_basis`(exp/stretched/τ=∞ 열)로 만든 성분 kinetics C(t), EADS 줄 오른쪽에 `sequential_populations`(c = C_perm·Bᵀ, `compute_eads_from_dads`의 B 재사용)로 만든 순차 모델 population을 그립니다. `DADS·Cᵀ = EADS·cᵀ`. 시간 격자는 fit delay + 균일/로그 채움 + IRF 상승부 세분(`_time_profiles`), x축은 kinetics Scale을 따릅니다. 피팅 때의 IRF 모드는 `ga_result_irf_mode`에 저장합니다.
 - **출력**: τ ± σ, β, t₀, FWHM, RMS, **DADS**(= A), **EADS**(`compute_eads_from_dads`, 순차 모델), fit 맵, residual 맵, 클릭한 λ의 kinetics.
 - **장치 가속** (`ta_device`): TensorFlow가 있으면 CPU/GPU 목록을 보여 줍니다. `TFBackend.lstsq/matmul`로 핫 커널을 해당 장치에서 실행합니다. GPU 상태(온도, 사용률, 팬)는 1 Hz로 갱신하고, 팬 속도 강제와 keep-warm 스레드, 관리자 권한 재실행 기능이 있습니다. TF가 없으면 NumPy로 동작합니다.
 - **Stop**: `stop_check` 콜백을 objective에서 확인하고, 중단되면 `GlobalAnalysisStopped` 예외를 던집니다.
