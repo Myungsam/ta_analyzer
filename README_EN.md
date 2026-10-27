@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.5.0** (latest) | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
+| **v1.6.0** (latest) | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
+| v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Window averaging (Integrate: delay ±idx, wavelength BW) in the Spectrum/Kinetics panels |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Moving average in Crop Data (pixel window, Box / Triangular / Gaussian) |
@@ -32,7 +33,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.5.0      # latest (same as main)
+git checkout v1.6.0      # latest (same as main)
+git checkout v1.5.0      # before Crop memory / CSV
 git checkout v1.4.0      # before the DADS/EADS time panels
 git checkout v1.3.0      # before fit statistics / pin import
 git checkout v1.2.0      # before Integrate
@@ -107,7 +109,7 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 - Like a crop, Apply **resets background, chirp, masks, the t=0 shift and Global Analysis results**. Resample first, then apply corrections.
 - If Δλ is not larger than the mean wavelength spacing, a warning appears and **only the crop is applied, without resampling**.
 - With solvent IRF subtraction, the solvent is reduced with **exactly the same bins** as the sample before it is subtracted.
-- Pinning delays/wavelengths for interpolation while resampling is on rebuilds the data from the original, so earlier interpolations that are not pinned again are lost.
+- With resampling on, pin interpolation rebuilds from the original and re-applies the whole remembered pin list (since v1.6.0 the list is kept, so earlier interpolations are not lost).
 - **Revert to Original**, or Full range + unchecked Resample + Apply, returns to the original resolution. The status bar shows the state, e.g. `[resampled Δλ=5 nm, avg]`, and exported file names get `rs5nm` appended.
 
 #### Moving average (v1.2.0)
@@ -132,6 +134,22 @@ The **Crop Data...** window cuts the λ/t range and can optionally reduce the nu
 - As with Average/Decimate, Apply resets the corrections and Revert restores the original. The status bar shows e.g. `[smoothed 15 px, gaussian]` and exported file names get `_ma15gaussian`.
 
 **Removing and interpolating delays/wavelengths**: mark glitched delays or wavelengths with **Pin (mark for drop)**; they are refilled with linear/cubic/pchip/akima/bilinear interpolation.
+
+**Remembered settings and Crop_information.csv (v1.6.0)**
+- The **Pinned delays / Pinned wavelengths** lists and the interpolation method stay when the Crop window is closed and reopened. They are cleared **only when new data is loaded** (not by Revert to Original).
+- Applying after removing an already-applied pin, or after changing the method, rebuilds from the original so the removed pin's interpolation does not stay in the data (corrections are reset in that case, too).
+- Every **Apply** writes **`Crop_information.csv`** into the folder of the loaded data file (overwritten each time). The status bar then ends with `· saved Crop_information.csv`; hovering shows the full path.
+- Contents (`parameter,value,unit,index`): source file, time saved, λ/t range, original and result point counts, whether Resample/smooth was on and its mode (Δλ, or window and kernel), whether it was actually applied (`False` when Apply fell back to a plain crop), interpolation method, and every pinned delay/wavelength with its original-grid index
+- Data that did not come from a folder (e.g. synthetic data) is not saved.
+
+```
+parameter,value,unit,index
+wavelength_min,450,nm,
+resample_mode,moving,,
+moving_window,7,px,
+pinned_delay_1,9.63291,ps,40
+pinned_wavelength_1,520,nm,60
+```
 
 ### 5.4 Analysis
 | Menu | Description |
@@ -236,6 +254,7 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   python test/test_pin_gating.py
   python test/test_fit_stats_kfit_import.py
   python test/test_ga_time_panels.py
+  python test/test_crop_memory_info.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
@@ -243,6 +262,11 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.6.0** (2026-10-27)
+- Crop window: pinned delays / wavelengths and the interpolation method are remembered (reset only when new data is loaded)
+- Crop window: Apply auto-saves `Crop_information.csv` in the data folder (λ/t range, resample / moving-average settings, method, pins with index)
+- Removing an applied pin or changing the method rebuilds from the original, so the old interpolation does not remain
 
 **v1.5.0** (2026-10-27)
 - Global Analysis: component kinetics C(t) ⊗ IRF next to DADS and sequential populations c(t) next to EADS (linked to Scale and Show components)

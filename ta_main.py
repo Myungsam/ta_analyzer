@@ -194,6 +194,15 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.specOverlayHalf: dict[float, int] = {}
         self.kinOverlayBW: dict[float, float] = {}
 
+        # --- Crop dialog memory (kept until new data is loaded) ---
+        # Pinned delays / wavelengths to delete + interpolate, stored as
+        # values on the ORIGINAL grid, and the interpolation method.
+        self.crop_drop_t: list[float] = []
+        self.crop_drop_wl: list[float] = []
+        self.crop_interp_method = 'linear'
+        # Pins + method currently baked into the working data
+        self.crop_applied = ((), (), 'linear')
+
         # --- Gating of the current spectrum / kinetics ("Integrate") ---
         # Spectrum: mean over delay idx ± spec_int_half.
         # Kinetics: mean over |λ - λc| <= kin_int_bw / 2.
@@ -948,6 +957,9 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.kinOverlays = []
         self.specOverlayHalf = {}
         self.kinOverlayBW = {}
+        self.crop_drop_t = []
+        self.crop_drop_wl = []
+        self.crop_applied = ((), (), 'linear')
         self.crop_bounds = None
         self.resample_enabled = False
         self.resample_dx = 1.0
@@ -2896,9 +2908,10 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         ``resample`` is ``{'enabled': bool, 'dx': float, 'mode': str}``.
         Calling without it (Revert, scripts) turns resampling off — the
         working grid always reflects exactly this call's request.
+        Returns False when nothing was applied (no data / empty range).
         """
         if self.original_deltaA is None:
-            return
+            return False
         if wl_min > wl_max:
             wl_min, wl_max = wl_max, wl_min
         if t_min > t_max:
@@ -2910,7 +2923,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                   (self.original_delay <= t_max))
         if not wl_mask.any() or not t_mask.any():
             warn_box(self, 'Invalid range', 'Empty crop range.')
-            return
+            return False
 
         full = bool(wl_mask.all() and t_mask.all())
         self.crop_bounds = (None if full
@@ -2996,6 +3009,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
 
         self._update_status_label()
         self.update_all()
+        return True
 
     def _rebuild_working_grid(self, wl_mask, t_mask, spec: dict | None):
         """Slice the originals with the masks and, if ``spec`` is given,

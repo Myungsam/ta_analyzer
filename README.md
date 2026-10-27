@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.5.0** (최신) | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
+| **v1.6.0** (최신) | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
+| v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
 | v1.3.0 | [`v1.3.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.3.0) | Spectrum/Kinetics 패널에 구간 평균(Integrate: delay ±idx, 파장 BW) 추가 |
 | v1.2.0 | [`v1.2.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.2.0) | Crop Data에 Moving average(pixel window, Box / Triangular / Gaussian) 추가 |
@@ -32,7 +33,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.5.0      # 최신 버전 (main과 같음)
+git checkout v1.6.0      # 최신 버전 (main과 같음)
+git checkout v1.5.0      # Crop 설정 기억·CSV 이전
 git checkout v1.4.0      # DADS/EADS 시간 패널 이전
 git checkout v1.3.0      # fit 통계·pin import 이전
 git checkout v1.2.0      # 구간 평균(Integrate) 이전
@@ -107,7 +109,7 @@ python ta_main.py
 - Crop과 마찬가지로 Apply하면 **Background, Chirp, Mask, t=0 이동, Global Analysis 결과가 초기화**됩니다. Resampling을 먼저 하고 보정을 나중에 하세요.
 - Δλ가 원본의 평균 파장 간격 이하이면 경고가 뜨고, **resampling 없이 crop만 적용**됩니다.
 - 용매 IRF 빼기를 쓰는 경우 용매 데이터도 샘플과 **똑같은 구간 묶음**으로 줄여서 뺍니다.
-- Resampling이 켜진 상태에서 delay/λ를 pin해 보간하면 원본부터 다시 만들기 때문에, 이전에 적용한 보간 중 다시 pin하지 않은 것은 사라집니다.
+- Resampling이 켜진 상태에서 pin 보간은 원본부터 다시 만들며, 기억된 pin 목록이 모두 다시 적용됩니다(v1.6.0부터 목록이 유지되므로 이전 보간이 사라지지 않음).
 - **Revert to Original** 또는 Full range + Resample 해제 + Apply로 원래 해상도로 돌아갑니다. 상태 표시줄에 `[resampled Δλ=5 nm, avg]`처럼 현재 상태가 표시되고, 내보내는 파일 이름에 `rs5nm`이 붙습니다.
 
 #### Moving average (v1.2.0)
@@ -132,6 +134,22 @@ python ta_main.py
 - Average/Decimate와 같이 Apply하면 보정이 초기화되고, Revert로 원래대로 돌아갑니다. 상태 표시줄에는 `[smoothed 15 px, gaussian]`, 내보내는 파일 이름에는 `_ma15gaussian`이 붙습니다.
 
 **특정 delay/λ 제거 후 보간**: 스펙트럼이나 kinetics에서 튀는 delay/λ를 **Pin (mark for drop)** 으로 표시하면 linear/cubic/pchip/akima/bilinear로 보간해 채웁니다.
+
+**설정 기억과 Crop_information.csv (v1.6.0)**
+- **Pinned delays / Pinned wavelengths** 목록과 보간 방법은 Crop 창을 닫았다 열어도 그대로 남습니다. **새 데이터를 불러올 때만** 지워집니다(Revert to Original로는 지워지지 않음).
+- 이미 적용한 pin을 지우거나 보간 방법을 바꾼 뒤 Apply하면 원본부터 다시 만들어, 지운 pin의 보간이 데이터에 남지 않습니다(이때도 보정이 초기화됨).
+- **Apply**를 누를 때마다 불러온 데이터 파일과 같은 폴더에 **`Crop_information.csv`** 를 자동으로 저장(덮어쓰기)합니다. 저장되면 상태 표시줄 끝에 `· saved Crop_information.csv`가 붙고, 마우스를 올리면 전체 경로가 보입니다.
+- 내용(`parameter,value,unit,index`): 원본 파일, 저장 시각, λ/t 범위, 원본·결과 점 수, Resample/smooth 사용 여부와 모드(Δλ 또는 window·kernel), 실제 적용 여부(조건이 안 맞아 crop만 했으면 `False`), 보간 방법, Pinned delay/wavelength 값과 원본 격자 index
+- 폴더에서 불러오지 않은 데이터(예: 합성 데이터)는 저장하지 않습니다.
+
+```
+parameter,value,unit,index
+wavelength_min,450,nm,
+resample_mode,moving,,
+moving_window,7,px,
+pinned_delay_1,9.63291,ps,40
+pinned_wavelength_1,520,nm,60
+```
 
 ### 5.4 분석
 | 메뉴 | 내용 |
@@ -236,6 +254,7 @@ corner, t1, t2, ..., tN
   python test/test_pin_gating.py
   python test/test_fit_stats_kfit_import.py
   python test/test_ga_time_panels.py
+  python test/test_crop_memory_info.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
@@ -243,6 +262,11 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.6.0** (2026-10-27)
+- Crop 창: Pinned delays / Pinned wavelengths와 보간 방법을 기억 (새 데이터를 불러올 때만 초기화)
+- Crop 창: Apply 시 데이터 폴더에 `Crop_information.csv` 자동 저장 (λ/t 범위, resample·moving average 설정, 보간 방법, pin 값과 index)
+- 적용된 pin을 지우거나 보간 방법을 바꾸면 원본부터 다시 만들어 이전 보간이 남지 않도록 수정
 
 **v1.5.0** (2026-10-27)
 - Global Analysis: DADS 줄에 성분 kinetics C(t) ⊗ IRF, EADS 줄에 순차 모델 population c(t) 그래프 추가 (Scale·Show components 연동)

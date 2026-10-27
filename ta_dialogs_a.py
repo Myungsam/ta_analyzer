@@ -28,6 +28,61 @@ def _bounds_close(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-6 * max(1.0, abs(b))
 
 
+CROP_INFO_FILENAME = 'Crop_information.csv'
+
+
+def write_crop_info(path, app, bounds, spec, resample_applied, method,
+                    drop_t, drop_wl):
+    """Write the Crop settings as ``parameter,value,unit,index`` rows.
+
+    ``bounds`` = (λ_min, λ_max, t_min, t_max) as applied; ``spec`` is the
+    requested resample/smoothing spec and ``resample_applied`` whether it
+    was used (False when Apply fell back to a plain crop).  Pinned values
+    are listed one per row with their index on the original grid.
+    """
+    import csv
+    import datetime
+
+    u = app.t_unit_hdr()
+    wl_o, t_o = app.original_wavelength, app.original_delay
+    rows = [
+        ('source', app.data_source_desc, '', ''),
+        ('saved_at', datetime.datetime.now().isoformat(timespec='seconds'),
+         '', ''),
+        ('wavelength_min', f'{bounds[0]:.6g}', 'nm', ''),
+        ('wavelength_max', f'{bounds[1]:.6g}', 'nm', ''),
+        ('t_min', f'{bounds[2]:.6g}', u, ''),
+        ('t_max', f'{bounds[3]:.6g}', u, ''),
+        ('original_points', f'{len(wl_o)} x {len(t_o)}', 'λ x t', ''),
+        ('result_points', f'{len(app.wavelength)} x {len(app.delay)}',
+         'λ x t', ''),
+        ('resample_smooth_enabled', str(bool(spec['enabled'])), '', ''),
+    ]
+    if spec['enabled']:
+        mode = spec['mode']
+        rows.append(('resample_mode', mode, '', ''))
+        if mode == 'moving':
+            rows.append(('moving_window', str(spec['window']), 'px', ''))
+            rows.append(('moving_kernel', spec['kernel'], '', ''))
+        else:
+            rows.append(('resample_dx', f"{spec['dx']:.6g}", 'nm', ''))
+        rows.append(('resample_applied', str(bool(resample_applied)), '', ''))
+    rows.append(('interpolation_method', method, '', ''))
+    rows.append(('n_pinned_delays', str(len(drop_t)), '', ''))
+    for i, t in enumerate(drop_t, 1):
+        rows.append((f'pinned_delay_{i}', f'{t:.6g}', u,
+                     str(int(np.argmin(np.abs(t_o - t))))))
+    rows.append(('n_pinned_wavelengths', str(len(drop_wl)), '', ''))
+    for i, w in enumerate(drop_wl, 1):
+        rows.append((f'pinned_wavelength_{i}', f'{w:.6g}', 'nm',
+                     str(int(np.argmin(np.abs(wl_o - w))))))
+    # utf-8-sig so Excel shows λ / μ correctly
+    with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+        w = csv.writer(f)
+        w.writerow(('parameter', 'value', 'unit', 'index'))
+        w.writerows(rows)
+
+
 # =====================================================================
 # Background Correction window
 # =====================================================================
@@ -133,13 +188,15 @@ class CropDialog(QtWidgets.QDialog):
         # Drops are pinned spectra to delete+interpolate.  Stored as
         # t-VALUES (snapped to original_delay) so they survive any
         # subsequent crop without index aliasing.
-        self._drop_t_values: list[float] = []
+        # Restored from the app, which keeps them until new data is
+        # loaded (see _store_pins).
+        self._drop_t_values: list[float] = list(app.crop_drop_t)
         self._drop_lines = []                 # red dashed h-lines on 2D map
         # Wavelength drops: same idea, but along the wavelength axis.
         # ``_kin_overlay_wl`` keeps its original attribute name (so
         # existing tests still see it) but is now the wavelength
         # drop-and-interpolate list, not just a visual overlay.
-        self._kin_overlay_wl: list[float] = []
+        self._kin_overlay_wl: list[float] = list(app.crop_drop_wl)
         self._kin_overlay_lines = []          # cyan dashed v-lines on 2D map
         # Cached preview: original_deltaA after interpolating the current
         # drops with the current method.  None when no drops are pinned
@@ -326,6 +383,7 @@ class CropDialog(QtWidgets.QDialog):
         self.dd_interp_method = QtWidgets.QComboBox()
         for m in ('linear', 'cubic', 'pchip', 'akima', 'bilinear'):
             self.dd_interp_method.addItem(m)
+        self.dd_interp_method.setCurrentText(app.crop_interp_method)
         method_row.addWidget(self.dd_interp_method)
         method_row.addStretch(1)
         gbv.addLayout(method_row)
@@ -452,7 +510,7 @@ class CropDialog(QtWidgets.QDialog):
 
         # Changing the interpolation method recomputes the live preview.
         self.dd_interp_method.currentTextChanged.connect(
-            lambda _: self._recompute_preview())
+            lambda _: (self._store_pins(), self._recompute_preview()))
 
         # 2D-map click now drives the crosshair / spec / kin panels.
         # Pin-as-drop is a separate explicit user action.
@@ -463,6 +521,13 @@ class CropDialog(QtWidgets.QDialog):
         self._draw_heatmap_full()
         self._update_overlays()
         self._update_resample_info()
+        if self._drop_t_values or self._kin_overlay_wl:
+            # Pins remembered from an earlier visit (same data)
+            self._refresh_drop_table()
+            self._refresh_drop_lines()
+            self._refresh_drop_wl_table()
+            self._refresh_kin_overlay_lines()
+            self._recompute_preview()
         self._draw_spectrum()
         self._draw_kinetics()
 
@@ -595,6 +660,9 @@ class CropDialog(QtWidgets.QDialog):
         self.app.apply_crop_by_range(
             self.wl_min_full, self.wl_max_full,
             self.t_min_full, self.t_max_full)
+        # Back to the raw data: no interpolation is baked in any more
+        # (the pins themselves stay listed for the next Apply).
+        self.app.crop_applied = ((), (), self.dd_interp_method.currentText())
         self.accept()
 
     def _apply(self):
@@ -622,6 +690,7 @@ class CropDialog(QtWidgets.QDialog):
                          u'applied without resampling.')
             spec = dict(spec, enabled=False)
         resample = spec if spec['enabled'] else None
+        self._store_pins()
 
         # Only re-crop when the range actually changed — otherwise running
         # apply_crop_by_range on identical bounds would needlessly reset
@@ -642,10 +711,19 @@ class CropDialog(QtWidgets.QDialog):
                      or any(abs(spec[p] - current[p]) > 1e-9 if p == 'dx'
                             else spec[p] != current[p]
                             for p in _MODE_PARAMS[spec['mode']]))))
-        rebuild = crop_changed or resample_changed
-
         method = self.dd_interp_method.currentText()
         has_drops = bool(self._drop_t_values or self._kin_overlay_wl)
+        ok = True                       # False: the crop was rejected
+        applied_t = tuple(self._drop_t_values)
+        applied_w = tuple(self._kin_overlay_wl)
+        # Interpolation already in the data can only be undone from the
+        # original: rebuild when an applied pin was removed or the method
+        # of applied pins changed.
+        done_t, done_w, done_m = app.crop_applied
+        stale = (not set(done_t) <= set(self._drop_t_values)
+                 or not set(done_w) <= set(self._kin_overlay_wl)
+                 or (bool(done_t or done_w) and done_m != method))
+        rebuild = crop_changed or resample_changed or stale
 
         # Order of operations follows the live preview: interpolate the
         # full original first, then crop (and resample) the processed
@@ -667,8 +745,10 @@ class CropDialog(QtWidgets.QDialog):
             # Guards: drop axis-wise drop lists that would leave < 2 anchors.
             if drop_t_full and len(t_full) - len(drop_t_full) < 2:
                 drop_t_full = []
+                applied_t = ()
             if drop_w_full and len(w_full) - len(drop_w_full) < 2:
                 drop_w_full = []
+                applied_w = ()
 
             try:
                 A_interp = self.app.original_deltaA
@@ -694,12 +774,13 @@ class CropDialog(QtWidgets.QDialog):
             saved = self.app.original_deltaA
             self.app.original_deltaA = A_interp
             try:
-                self.app.apply_crop_by_range(wl1, wl2, t1, t2,
-                                             resample=resample)
+                ok = self.app.apply_crop_by_range(wl1, wl2, t1, t2,
+                                                  resample=resample)
             finally:
                 self.app.original_deltaA = saved
         elif rebuild:
-            self.app.apply_crop_by_range(wl1, wl2, t1, t2, resample=resample)
+            ok = self.app.apply_crop_by_range(wl1, wl2, t1, t2,
+                                              resample=resample)
         elif has_drops:
             assert not self.app.resample_enabled
             new_delay = self.app.delay
@@ -724,7 +805,37 @@ class CropDialog(QtWidgets.QDialog):
                 if drop_w_idx:
                     self.app.interpolate_wavelengths_at(
                         drop_w_idx, method=method)
+        if not ok:
+            # e.g. empty range — warned already; keep the dialog open and
+            # leave the record of what is in the data unchanged.
+            return
+        app.crop_applied = (applied_t, applied_w, method)
+        self._save_crop_info((wl1, wl2, t1, t2), self._resample_spec(),
+                             resample is not None, method)
         self.accept()
+
+    def _save_crop_info(self, bounds, spec, resample_applied, method):
+        """Write the Crop settings to ``Crop_information.csv`` next to
+        the loaded data (overwritten on every Apply).  A failed write is
+        reported but never undoes the applied crop.  Data that did not
+        come from a folder (no ``data_source_dir``) is not saved."""
+        app = self.app
+        folder = app.data_source_dir
+        if not (folder and os.path.isdir(folder)):
+            return
+        path = os.path.join(folder, CROP_INFO_FILENAME)
+        try:
+            write_crop_info(path, app, bounds, spec, resample_applied,
+                            method, self._drop_t_values,
+                            self._kin_overlay_wl)
+        except Exception as e:
+            warn_box(self, 'Crop information',
+                     f'Could not write {CROP_INFO_FILENAME}:\n{e}')
+            return
+        app._update_status_label()          # no repeated suffix
+        app.lbl_status.setText(app.lbl_status.text()
+                               + f'   · saved {CROP_INFO_FILENAME}')
+        app.lbl_status.setToolTip(os.path.abspath(path))
 
     # ------------------------------------------------------------------
     # Delete-and-interpolate helpers
@@ -911,7 +1022,16 @@ class CropDialog(QtWidgets.QDialog):
         self._refresh_drop_lines()
         self._recompute_preview()
 
+    def _store_pins(self):
+        """Keep the pins and method on the app so they survive closing
+        the dialog; only loading new data resets them."""
+        app = self.app
+        app.crop_drop_t = list(self._drop_t_values)
+        app.crop_drop_wl = list(self._kin_overlay_wl)
+        app.crop_interp_method = self.dd_interp_method.currentText()
+
     def _refresh_drop_table(self):
+        self._store_pins()
         t_full = self.app.original_delay
         self.tbl_drops.setRowCount(len(self._drop_t_values))
         for r, t in enumerate(self._drop_t_values):
@@ -973,6 +1093,7 @@ class CropDialog(QtWidgets.QDialog):
         self._recompute_preview()
 
     def _refresh_drop_wl_table(self):
+        self._store_pins()
         w_full = self.app.original_wavelength
         self.tbl_drops_wl.setRowCount(len(self._kin_overlay_wl))
         for r, w in enumerate(self._kin_overlay_wl):
