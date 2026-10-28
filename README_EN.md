@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.7.0** (latest) | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
+| **v1.8.0** (latest) | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
+| v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ and fit statistics; Kinetic Fit pin import, global fit and population ratio |
@@ -34,7 +35,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.7.0      # latest (same as main)
+git checkout v1.8.0      # latest (same as main)
+git checkout v1.7.0      # before opju export
 git checkout v1.6.0      # before DADS/EADS time-data export
 git checkout v1.5.0      # before Crop memory / CSV
 git checkout v1.4.0      # before the DADS/EADS time panels
@@ -51,7 +53,7 @@ Without git, use **Source code (zip)** on the Releases page.
 
 **From Python** (3.10 or newer):
 ```bash
-pip install PyQt5 numpy scipy matplotlib openpyxl
+pip install PyQt5 numpy scipy matplotlib openpyxl comtypes   # comtypes: opju export (section 5.9)
 python ta_main.py
 ```
 
@@ -226,6 +228,29 @@ The DADS and EADS rows of the Global Analysis results now end with a delay-axis 
 
   The time files use the plotted grid (measured delays + fill points + IRF rise). Renaming the file in the save dialog renames its companion too (e.g. `sample_DADS_spectra.csv` → `sample_DADS_kinetics.csv`). If only the companion already exists, you are asked before it is overwritten.
 
+### 5.9 Export to an Origin project (.opju) (v1.8.0)
+
+![opju dataset info](docs/images/opju_dataset_info.png)
+
+Saving a CSV with one of the exports below also **stages** the same data for the opju; only the latest export of each item is kept.
+
+| opju sheet | Staged by |
+|---|---|
+| Original_Data | **Export 2D data_original...** |
+| Data_Chirp_Corrected | **Export 2D Data...** — only while chirp correction is applied |
+| Chirp_line | Chirp Correction window **Save points** |
+| Kinetics / Spectra | Kinetics / Spectrum panel **Export pins** |
+| EADS + EADS_populations / DADS + DADS_kinetics | Global Analysis **Export EADS / DADS** |
+| Global_Fit / Residual | Global Analysis **Export Fit / Resid.** |
+
+1. Export the CSVs you need, then press **Export OPJU...** above the main 2D map.
+2. The **opju dataset info** window lists each sheet's status (Saved / —), the exported file, time and details.
+3. **저장** (Save) asks for the location (default: `Transient absorption_filled.opju` in the data folder) and runs `add_function/ta_opju_builder.py`, which builds 11 sheets and 9 graphs in Origin; progress is shown at the bottom. **취소** (Cancel) only closes the window and keeps the staging.
+4. The staged data is cleared **when a new TA data set is loaded** (and when the program exits).
+
+- Needs **Origin 2018 or later**; running from Python also needs `comtypes` (`pip install comtypes`; bundled in the exe). Saving is refused while Origin is running — close all Origin windows first.
+- Sheets without data are created empty with an empty graph frame. Exports saved as .xlsx/.tsv put the same values into the opju.
+
 ## 6. Input file formats
 
 CSV / TSV / DAT / TXT are read automatically (delimiter detection, blanks and NaN handled).
@@ -265,13 +290,19 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
   python test/test_fit_stats_kfit_import.py
   python test/test_ga_time_panels.py
   python test/test_crop_memory_info.py
+  python test/test_opju_export.py
   ```
   Four tests with hard-coded measurement-data paths (`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`) cannot run without that data. The zoom check in `test_new_features` is a known failure since v1.0.0.
 - Build: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving,gating,kfit,ga` selects a subset)
+- Regenerate the README images: `python tools/make_screenshots.py` (synthetic data; `--scenes main,crop,moving,gating,kfit,ga,opju` selects a subset)
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.8.0** (2026-10-28)
+- **Export OPJU...** button and **opju dataset info** window: review the data staged by the exports (2D original / chirp-corrected, chirp points, pins, DADS/EADS + kinetics/populations, GA fit/residual); **저장** builds the .opju with `add_function/ta_opju_builder.py`
+- Staging keeps the latest export per item and is cleared when new data is loaded
+- `add_function/` now carries the builder's dependencies (`ta_opju_filler.py`, `origin_templates/*.otpu`); the exe bundles comtypes and the templates
 
 **v1.7.0** (2026-10-27)
 - Global Analysis Export **DADS**: `DADS_spectra.csv` + `DADS_kinetics.csv` (component kinetics C(t)); **EADS**: `EADS_spectra.csv` + `EADS_populations.csv` (sequential populations)

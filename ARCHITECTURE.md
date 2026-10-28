@@ -52,7 +52,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 
 | 계층 | 모듈 | 줄 수 | 역할 |
 |---|---|---:|---|
-| **Entry / Shell** | `ta_main.py` | 3,387 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
+| **Entry / Shell** | `ta_main.py` | 3,426 | `TAAnalyzer` 메인 윈도우: 상태 초기화, UI 구성, 보정 파이프라인, 패널 3개 렌더링, crop/interp/zero-shift, export, 다이얼로그 열기. `main()` 진입점 |
 | **Numerical core** | `ta_core.py` | 2,391 | 파일 파싱/쓰기, colormap, chirp 모델·피팅·ridge, solvent 정렬, 결측 보간, λ축 resampling(`resample_wavelength`, `moving_average_wavelength`, dispatcher `resample_by_spec`, 재적용 `apply_resample_info` = `apply_bin_groups`), spectrum/kinetics gating(`delay_gate`, `wavelength_gate`, `gated_mean`), IRF 컨볼루션, GA(VARPRO), fit 통계·1σ(`varpro_stats`, `nl_param_std`, `format_fit_stats`, `population_ratio`), EADS, stretched-exp, single-trace fit, LDA/L-curve, MCR-ALS, coherence FFT |
 | | `ta_lpsvd.py` | 525 | LPSVD(Lorentzian)와 Gaussian 감쇠 진동자 모드 분해 (1D 시계열) |
 | **Infra / Service** | `ta_residual_store.py` | 369 | GA/LDA residual을 `residuals/*.xlsx`로 저장하고, 목록 조회·로드 (CSV도 로드 가능) |
@@ -64,7 +64,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | **Correction dialogs** | `ta_dialogs_a.py` | 1,919 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
 | | `ta_chirp.py` | 446 | `ChirpDialog`: 클릭 또는 ridge 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
-| **Analysis dialogs** | `ta_ga.py` | 1,994 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
+| **Analysis dialogs** | `ta_ga.py` | 2,038 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
 | | `ta_svd.py` | 419 | `SVDDialog`: σ 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
 | | `ta_kfit.py` | 690 | `KineticFitDialog`: Import 버튼으로 trace 반입(main 창 pin된 kinetics 또는 단일 λ/λ 창 평균). 여러 개면 global fit, 1개면 단일 fit. σ, population ratio, fit 통계 |
 | | `ta_lda.py` | 471 | `LDADialog`: Tikhonov 정규화 lifetime density, L-curve |
@@ -125,6 +125,7 @@ graph TD
 | Crop / Resample (v1.1.0, v1.2.0) | `crop_bounds`, `resample_enabled`, `resample_mode`(`average`/`decimate`/`moving`), `resample_dx`, `resample_window`, `resample_kernel`, `resample_info`, `_crop_wl_pre_resample` | 요청한 crop 범위(원본 시간축 기준, 전체면 None)와 λ축 resampling 설정. 모드별 파라미터(bin: `resample_dx`, moving: `resample_window`/`resample_kernel`)는 커널이 받아들였을 때만 저장됩니다. `resample_info`는 수행한 연산(average: `starts`, decimate: `idx`, moving: `k`/`kernel`), `_crop_wl_pre_resample`는 resampling 직전의 crop된 λ축 |
 | Selection | `selWL`, `selT`, `_selT_idx` | 크로스헤어 위치. delay는 측정된 점으로만 이동(index 기반) |
 | Overlays | `specOverlays`(t 목록), `kinOverlays`(λ 목록), pin별 구간 `specOverlayHalf`(t→±idx), `kinOverlayBW`(λ→BW nm) | Pin 기능. 구간이 없는 pin은 한 점 trace |
+| opju staging | `opju_stage`(`ta_opju_export.OpjuStaging`: builder key → 임시 CSV, 항목별 최신만) | 반출 함수들이 성공 후 `stage`/`stage_matrix`로 등록. `set_loaded_data`에서 `clear()`(임시 폴더 삭제). **Export OPJU...** → `OpjuDatasetDialog`(opju dataset info, 저장/취소) → `_BuildThread`에서 `add_function/ta_opju_builder.build(files=…)`(Origin 2018 COM) |
 | Crop memory | `crop_drop_t`, `crop_drop_wl`(원본 격자 값), `crop_interp_method`, `crop_applied`(데이터에 반영된 pin·method) | Crop 창 Pinned delays/wavelengths 기억. `set_loaded_data`에서만 초기화. 적용된 pin이 빠지거나 method가 바뀌면 `_apply`가 원본부터 rebuild. Apply마다 `write_crop_info` → `<data_source_dir>/Crop_information.csv` |
 | Gating (Integrate) | `spec_int_enabled`/`spec_int_half`, `kin_int_enabled`/`kin_int_bw` | 현재 spectrum/kinetics를 구간 평균으로 표시(`_spec_trace`, `_kin_trace`). 데이터는 바꾸지 않고 보기·Export pins에만 적용 |
 | 표시 설정 | `delay_scale_mode`(linear/log/split), `split_threshold`, `main_view_t{min,max}`, `map_colormap`, `map_z_{min,max}`, `time_unit`(ps/us) | |

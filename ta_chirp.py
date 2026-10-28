@@ -11,6 +11,7 @@ from ta_widgets import (
     style_button, warn_box, info_box, ask_save_path, ask_open_paths,
 )
 import ta_core
+import ta_opju_export
 
 
 class ChirpDialog(QtWidgets.QDialog):
@@ -221,6 +222,8 @@ class ChirpDialog(QtWidgets.QDialog):
         except Exception as e:
             warn_box(self, 'Save failed', f'Could not save:\n{e}')
             return
+        ta_opju_export.stage(app, 'chirp', path,
+                             f'{sorted_pts.shape[0]} points')
         info_box(self, 'Saved',
                  f'Saved {sorted_pts.shape[0]} chirp points to:\n{path}')
 

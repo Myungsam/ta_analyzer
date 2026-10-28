@@ -17,6 +17,7 @@ from ta_widgets import (
     style_button, info_box, warn_box, ask_save_path,
 )
 import ta_core
+import ta_opju_export
 import ta_device
 import ta_residual_store
 
@@ -1921,6 +1922,9 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             ['wavelength_nm'] + [f'DADS_{n}' for n in names],
             'kinetics', kinetics)
         if path_t:
+            ta_opju_export.stage(app, 'DADS', path, os.path.basename(path))
+            ta_opju_export.stage(app, 'DADS_kinetics', path_t,
+                                 os.path.basename(path_t))
             info_box(self, 'DADS exported',
                      f'Spectra:  {path}\nKinetics: {path_t}')
 
@@ -1956,6 +1960,9 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             ['wavelength_nm'] + [f'EADS_{n}' for n in names],
             'populations', populations)
         if path_t:
+            ta_opju_export.stage(app, 'EADS', path, os.path.basename(path))
+            ta_opju_export.stage(app, 'EADS_populations', path_t,
+                                 os.path.basename(path_t))
             info_box(self, 'EADS exported',
                      f'Saved EADS (sequential, {n_tot} species).\n\n'
                      f'Spectra:     {path}\nPopulations: {path_t}')
@@ -1985,6 +1992,9 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         delim = ',' if path.lower().endswith('.csv') else '\t'
         try:
             ta_core.write_data_file(path, app.wavelength, t_axis, M, delim)
+            ta_opju_export.stage(
+                app, 'GA_fit' if which == 'fit' else 'GA_residual', path,
+                f'{len(app.wavelength)} λ x {len(t_axis)} t')
             info_box(self, f'{label} exported',
                      f'Saved {label} matrix  '
                      f'({len(app.wavelength)} λ x {len(t_axis)} t).\n\n'

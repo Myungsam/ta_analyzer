@@ -26,6 +26,7 @@ LOCAL_MODULES = [
     'ta_load_custom',
     'ta_lpsvd',
     'ta_mcr',
+    'ta_opju_export',
     'ta_residual_store',
     'ta_solvent_irf',
     'ta_svd',
@@ -55,10 +56,16 @@ HIDDEN = [
 ]
 HIDDEN += LOCAL_MODULES
 HIDDEN += collect_submodules('scipy.optimize')
+# Origin (.opju) export: add_function/ builder modules (imported lazily by
+# ta_opju_export.load_builder) and the comtypes COM client they use.
+HIDDEN += ['ta_opju_builder', 'ta_opju_filler']
+HIDDEN += collect_submodules('comtypes')
 
 # Bundle matplotlib's data files (fonts, mpl-data, etc.).
 DATAS = []
 DATAS += collect_data_files('matplotlib')
+# Graph templates; the builder looks for them in <_MEIPASS>/origin_templates
+DATAS += [('add_function/origin_templates/*.otpu', 'origin_templates')]
 
 # Excludes: TensorFlow / GPU stack aren't installed here and the code
 # already falls back to numpy when they're missing.  Prevent
@@ -75,7 +82,7 @@ EXCLUDES = [
 
 a = Analysis(
     ['ta_main.py'],
-    pathex=[],
+    pathex=['add_function'],
     binaries=[],
     datas=DATAS,
     hiddenimports=HIDDEN,

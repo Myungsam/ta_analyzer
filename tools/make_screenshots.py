@@ -64,7 +64,7 @@ def save(widget: QtWidgets.QWidget, name: str):
     print(f'wrote {path} ({pix.width()}x{pix.height()})')
 
 
-SCENES = ('main', 'crop', 'moving', 'gating', 'kfit', 'ga')
+SCENES = ('main', 'crop', 'moving', 'gating', 'kfit', 'ga', 'opju')
 
 
 def main(argv=None):
@@ -174,6 +174,35 @@ def main(argv=None):
         QtWidgets.QApplication.processEvents()
         save(ga, 'ga_stats.png')
         ga.close()
+
+    if 'opju' in scenes:
+        # opju dataset info with part of the sheets staged
+        import tempfile
+        import ta_opju_export
+        win.set_loaded_data(wl, t, A, 'Loaded: synthetic_TA.csv')
+        st = win.opju_stage
+        st.stage_matrix('cropped_original', wl, t, A,
+                        'synthetic_TA_2D_cropped_original.csv', 'cropped_original')
+        st.stage_matrix('chirp_cropped', wl, t, A,
+                        'synthetic_TA_2D_BG5_chirp_cropped.csv', 'BG5_chirp_cropped')
+        tmp = tempfile.mkdtemp()
+        for key, name, cols in (
+                ('pinned_kinetics', 'synthetic_TA_pinned_kinetics.csv', 3),
+                ('pinned_spectra', 'synthetic_TA_pinned_spectra.csv', 3),
+                ('chirp', 'chirp_points.csv', 2)):
+            p = os.path.join(tmp, name)
+            np.savetxt(p, np.random.default_rng(0).normal(size=(10, cols)),
+                       delimiter=',', header=','.join(['x'] * cols),
+                       comments='')
+            st.stage_file(key, p, f'{cols - 1} column(s)')
+        dlg = ta_opju_export.OpjuDatasetDialog(win, win)
+        # Offscreen Qt has no glyph fallback: use a font with Hangul so
+        # the 저장 / 취소 buttons render (Windows itself falls back).
+        dlg.setFont(QtGui.QFont('Malgun Gothic', 9))
+        dlg.resize(1000, 480)
+        save(dlg, 'opju_dataset_info.png')
+        dlg.close()
+        st.clear()
     win.close()
 
 

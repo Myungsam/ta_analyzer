@@ -23,6 +23,7 @@ from matplotlib.figure import Figure
 from matplotlib.colors import ListedColormap
 
 import ta_core
+import ta_opju_export
 from ta_widgets import (
     MplCanvas, make_label, make_double_edit, make_int_edit,
     style_button, info_box, warn_box, ask_save_path, ask_open_paths,
@@ -203,6 +204,10 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # Pins + method currently baked into the working data
         self.crop_applied = ((), (), 'linear')
 
+        # --- Origin (.opju) export: CSVs staged by every feeding export,
+        # cleared when a new data set is loaded (see ta_opju_export) ---
+        self.opju_stage = ta_opju_export.OpjuStaging()
+
         # --- Gating of the current spectrum / kinetics ("Integrate") ---
         # Spectrum: mean over delay idx ± spec_int_half.
         # Kinetics: mean over |λ - λc| <= kin_int_bw / 2.
@@ -312,6 +317,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # analysis methods.  Same single-instance discipline as the
         # others (close + reopen rather than stacking).
         self.kfit_fig = None
+        self.opju_fig = None
         self.lda_fig = None
         self.mcr_fig = None
         self.coh_fig = None
@@ -599,6 +605,15 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         style_button(btn_export_2d, bg='#4c8cca', fg='white')
         btn_export_2d.clicked.connect(self.export_2d_data)
         ctrl2d.addWidget(btn_export_2d)
+        # Origin project from the CSVs exported so far (opju dataset info)
+        btn_export_opju = QtWidgets.QPushButton('Export OPJU...')
+        btn_export_opju.setToolTip(
+            'Show the data staged by the CSV exports (2D data, chirp '
+            'points, pins, DADS/EADS, GA fit/residual) and save them as an '
+            'Origin project (.opju, needs Origin 2018+).')
+        style_button(btn_export_opju, bg='#e07b39', fg='white')
+        btn_export_opju.clicked.connect(self.open_opju_window)
+        ctrl2d.addWidget(btn_export_opju)
         pnl2d_lay.addLayout(ctrl2d)
 
         # 2D map canvas
@@ -960,6 +975,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.crop_drop_t = []
         self.crop_drop_wl = []
         self.crop_applied = ((), (), 'linear')
+        self.opju_stage.clear()
         self.crop_bounds = None
         self.resample_enabled = False
         self.resample_dx = 1.0
@@ -2762,6 +2778,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         try:
             np.savetxt(path, arr, delimiter=',',
                        header=','.join(headers), comments='', fmt='%.6g')
+            ta_opju_export.stage(self, 'pinned_spectra', path,
+                                 f'{len(cols) - 1} spectra')
             info_box(self, 'Export complete',
                      f'Saved {len(cols) - 1} pinned spectrum(a) '
                      f'({len(self.wavelength)} wavelengths) to:\n{path}')
@@ -2799,6 +2817,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         try:
             np.savetxt(path, arr, delimiter=',',
                        header=','.join(headers), comments='', fmt='%.6g')
+            ta_opju_export.stage(self, 'pinned_kinetics', path,
+                                 f'{len(cols) - 1} kinetics')
             info_box(self, 'Export complete',
                      f'Saved {len(cols) - 1} pinned kinetic(s) '
                      f'({len(self.delay)} delays) to:\n{path}')
@@ -3152,7 +3172,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             'CSV (*.csv);;TSV (*.tsv);;Excel (*.xlsx);;Text (*.txt);;'
             'All files (*)')
         if not path:
-            return
+            return None
 
         ext = os.path.splitext(path)[1].lower()
         if not ext:
@@ -3191,8 +3211,11 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         except RuntimeError as e:
             # openpyxl missing
             warn_box(self, 'Export error', str(e))
+            return None
         except Exception as e:
             warn_box(self, 'Export error', f'Export failed:\n{e}')
+            return None
+        return path
 
     def export_2d_data(self):
         """Save the displayed (fully corrected) 2D ΔA matrix to
@@ -3214,8 +3237,12 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         if self.masked_regions:
             parts.append(f'masked{len(self.masked_regions)}')
         suffix = '_'.join(parts) if parts else 'raw'
-        self._export_2d_matrix(self.deltaA, suffix,
-                               caption='Export 2D map data')
+        path = self._export_2d_matrix(self.deltaA, suffix,
+                                      caption='Export 2D map data')
+        if path and self.chirp_applied:
+            ta_opju_export.stage_matrix(
+                self, 'chirp_cropped', self.wavelength, self.delay,
+                self.deltaA, os.path.basename(path), suffix)
 
     def export_2d_data_original(self):
         """Save the cropped *original* 2D matrix — i.e. ``deltaA_raw``
@@ -3227,9 +3254,13 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         suffix = 'cropped_original' if self.is_cropped() else 'original'
         if self.resample_enabled:
             suffix += f'_{self._resample_suffix()}'
-        self._export_2d_matrix(
+        path = self._export_2d_matrix(
             self.deltaA_raw, suffix,
             caption='Export 2D map (original, pre-processing)')
+        if path:
+            ta_opju_export.stage_matrix(
+                self, 'cropped_original', self.wavelength, self.delay,
+                self.deltaA_raw, os.path.basename(path), suffix)
 
     # ================================================================
     # Dialog management
@@ -3361,11 +3392,25 @@ class TAAnalyzer(QtWidgets.QMainWindow):
     # ================================================================
     # Clean shutdown
     # ================================================================
+    def open_opju_window(self):
+        """opju dataset info: staged sheets + 저장 / 취소."""
+        dlg = self._open_dialog(ta_opju_export.OpjuDatasetDialog,
+                                'opju_fig')
+        dlg.refresh()                     # exports since it was opened
+
     def closeEvent(self, ev):
+        # An opju build drives a hidden Origin; quitting mid-build would
+        # kill the thread and leave Origin running.
+        if self.opju_fig is not None and self.opju_fig.is_building():
+            ev.ignore()
+            warn_box(self, 'opju export in progress',
+                     'An Origin project is being built.  Close the '
+                     'program after it has finished.')
+            return
         for attr in ('bg_fig', 'chirp_fig', 'crop_fig',
                      'load_fig', 'ga_fig', 'mask_fig',
                      'kfit_fig', 'svd_fig', 'sub_irf_fig',
-                     'lda_fig', 'mcr_fig', 'coh_fig'):
+                     'lda_fig', 'mcr_fig', 'coh_fig', 'opju_fig'):
             d = getattr(self, attr, None)
             if d is not None:
                 try:

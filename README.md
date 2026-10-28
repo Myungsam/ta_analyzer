@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.7.0** (최신) | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
+| **v1.8.0** (최신) | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
+| v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
 | v1.4.0 | [`v1.4.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.4.0) | Global Analysis σ·fit 통계, Kinetic Fit에 pin import·global fit·population ratio 추가 |
@@ -34,7 +35,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.7.0      # 최신 버전 (main과 같음)
+git checkout v1.8.0      # 최신 버전 (main과 같음)
+git checkout v1.7.0      # opju 반출 이전
 git checkout v1.6.0      # DADS/EADS 시간 데이터 export 이전
 git checkout v1.5.0      # Crop 설정 기억·CSV 이전
 git checkout v1.4.0      # DADS/EADS 시간 패널 이전
@@ -51,7 +53,7 @@ git 없이 받으려면 Releases 페이지의 **Source code (zip)** 를 쓰면 �
 
 **Python으로 실행** (Python 3.10 이상):
 ```bash
-pip install PyQt5 numpy scipy matplotlib openpyxl
+pip install PyQt5 numpy scipy matplotlib openpyxl comtypes   # comtypes: opju 반출(5.9절)용
 python ta_main.py
 ```
 
@@ -226,6 +228,29 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 
   시간 파일은 그래프와 같은 격자(측정 delay + 채움 점 + IRF 상승부)입니다. 저장 창에서 이름을 바꾸면 짝 파일도 따라갑니다(예: `sample_DADS_spectra.csv` → `sample_DADS_kinetics.csv`). 스펙트럼 파일은 새로 만드는데 짝 파일만 이미 있으면 덮어쓸지 한 번 더 묻습니다.
 
+### 5.9 Origin 프로젝트(.opju)로 반출 (v1.8.0)
+
+![opju dataset info](docs/images/opju_dataset_info.png)
+
+아래 Export 버튼으로 CSV를 저장하면, 같은 데이터가 opju용으로 **임시 저장**됩니다. 항목마다 가장 최근에 반출한 것 하나만 남습니다.
+
+| opju 시트 | 임시 저장하는 반출 |
+|---|---|
+| Original_Data | **Export 2D data_original...** |
+| Data_Chirp_Corrected | **Export 2D Data...** — chirp 보정을 적용한 상태에서만 |
+| Chirp_line | Chirp Correction 창 **Save points** |
+| Kinetics / Spectra | Kinetics / Spectrum 패널 **Export pins** |
+| EADS + EADS_populations / DADS + DADS_kinetics | Global Analysis **Export EADS / DADS** |
+| Global_Fit / Residual | Global Analysis **Export Fit / Resid.** |
+
+1. 필요한 CSV를 반출한 뒤 main 창 2D map 위쪽의 **Export OPJU...** 를 누릅니다.
+2. **opju dataset info** 창에 시트별 상태(Saved / —), 반출한 파일 이름, 시각, 내용이 표시됩니다.
+3. **저장**을 누르면 저장 위치를 고르고(기본: 데이터 폴더의 `Transient absorption_filled.opju`), `add_function/ta_opju_builder.py`가 Origin으로 시트 11개와 그래프 9개를 만듭니다. 진행 상황은 창 아래에 나옵니다. **취소**는 창만 닫고 임시 저장은 그대로 둡니다.
+4. 임시 저장된 데이터는 **새 TA 데이터를 불러올 때** 모두 지워집니다(프로그램을 끌 때도 지워짐).
+
+- **Origin 2018 이상**이 설치되어 있어야 하고, Python으로 실행할 때는 `comtypes`가 필요합니다(`pip install comtypes`, exe에는 포함). 실행 중인 Origin이 있으면 저장하지 않으니 Origin을 모두 닫고 누르세요.
+- 데이터가 없는 시트는 빈 시트와 빈 그래프 틀로 만들어집니다. .xlsx/.tsv로 반출해도 opju에는 같은 값이 들어갑니다.
+
 ## 6. 입력 파일 형식
 
 CSV / TSV / DAT / TXT를 자동으로 읽습니다(구분자 자동 인식, 빈 칸과 NaN 처리).
@@ -265,13 +290,19 @@ corner, t1, t2, ..., tN
   python test/test_fit_stats_kfit_import.py
   python test/test_ga_time_panels.py
   python test/test_crop_memory_info.py
+  python test/test_opju_export.py
   ```
   측정 데이터 경로가 코드에 고정된 테스트 4개(`test_real_file`, `test_session_fixes`, `test_crop_input_fix`, `test_crop_preview_perf`)는 해당 데이터가 없으면 실행되지 않습니다. `test_new_features`의 zoom 유지 검사는 v1.0.0부터 알려진 실패입니다.
 - 빌드: `python -m PyInstaller ta_analyzer.spec --noconfirm --clean` → `dist/TA_Analyzer.exe`
-- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving,gating,kfit,ga`로 일부만 가능)
+- README 그림 다시 만들기: `python tools/make_screenshots.py` (합성 데이터 사용, `--scenes main,crop,moving,gating,kfit,ga,opju`로 일부만 가능)
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.8.0** (2026-10-28)
+- **Export OPJU...** 버튼과 **opju dataset info** 창: 반출할 때 임시 저장된 데이터(2D original / chirp-corrected, chirp points, pins, DADS/EADS + kinetics/populations, GA fit/residual)를 확인하고 **저장**하면 `add_function/ta_opju_builder.py`로 .opju 생성
+- 임시 저장은 항목별 최신 반출만 유지, 새 데이터를 불러오면 삭제
+- `add_function/`에 builder 의존 파일(`ta_opju_filler.py`, `origin_templates/*.otpu`) 포함, exe에 comtypes·템플릿 포함
 
 **v1.7.0** (2026-10-27)
 - Global Analysis Export **DADS**: `DADS_spectra.csv` + `DADS_kinetics.csv`(성분 kinetics C(t)), **EADS**: `EADS_spectra.csv` + `EADS_populations.csv`(순차 모델 population)
