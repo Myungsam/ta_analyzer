@@ -55,11 +55,29 @@ class ChirpDialog(QtWidgets.QDialog):
         main_row.addLayout(right, stretch=2)
         outer.addLayout(main_row, stretch=1)
 
-        # Ridge helper row
-        ridge_box = QtWidgets.QGroupBox('Ridge Helper (reference t₀ curve)')
+        # t0 helper: option buttons on the left, one row per method.
+        # Row 0 = ridge (argmax) + shared search window / λ-smooth,
+        # row 1 = per-λ erf (IRF⊗exp) fit, row 2 = overlay / Auto-place.
+        ridge_box = QtWidgets.QGroupBox('t₀ Helper (reference t₀ curve)')
         r_lay = QtWidgets.QGridLayout(ridge_box)
-        self.cb_show_ridge = QtWidgets.QCheckBox('Show ridge overlay')
-        r_lay.addWidget(self.cb_show_ridge, 0, 0)
+        self.rb_ridge = QtWidgets.QRadioButton('Ridge (argmax)')
+        self.rb_erf = QtWidgets.QRadioButton('erf fit (IRF⊗exp)')
+        self.rb_ridge.setToolTip(
+            'Per wavelength: delay of max |dA/dt| or |ΔA| in the search '
+            'window; moving-average over λ-smooth points.')
+        self.rb_erf.setToolTip(
+            'Per wavelength: fit A·(exp ⊗ Gaussian IRF) + offset in the '
+            'search window; t₀ from the fit. Rows with R² below the '
+            'minimum or t₀ at a window edge are dropped; λ-smooth applies '
+            'a median filter.')
+        self._helper_group = QtWidgets.QButtonGroup(self)
+        self._helper_group.addButton(self.rb_ridge)
+        self._helper_group.addButton(self.rb_erf)
+        (self.rb_erf if app.t0_helper == 'erf'
+         else self.rb_ridge).setChecked(True)
+        r_lay.addWidget(self.rb_ridge, 0, 0)
+        r_lay.addWidget(self.rb_erf, 1, 0)
+
         r_lay.addWidget(make_label('Method:', 'right'), 0, 1)
         self.dd_method = QtWidgets.QComboBox()
         self.dd_method.addItems(['max|dA/dt|', 'max|deltaA|'])
@@ -77,12 +95,33 @@ class ChirpDialog(QtWidgets.QDialog):
         self.btn_rec_ridge = QtWidgets.QPushButton('Recompute')
         r_lay.addWidget(self.btn_rec_ridge, 0, 9)
 
-        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 1, 1)
+        r_lay.addWidget(make_label('R² min:', 'right'), 1, 1)
+        self.ed_r2min = make_double_edit(app.erf_r2_min, decimals=3,
+                                         minv=0.0, maxv=0.999)
+        self.ed_r2min.setSingleStep(0.01)
+        r_lay.addWidget(self.ed_r2min, 1, 2)
+        r_lay.addWidget(make_label(u'λ stride (0=auto):', 'right'), 1, 3)
+        self.ed_stride = make_int_edit(app.erf_stride, minv=0, maxv=1000)
+        r_lay.addWidget(self.ed_stride, 1, 4)
+        self.lbl_erf = QtWidgets.QLabel('')
+        self.lbl_erf.setStyleSheet('color: #555;')
+        r_lay.addWidget(self.lbl_erf, 1, 5, 1, 5)
+
+        self.cb_show_ridge = QtWidgets.QCheckBox('Show t₀ overlay')
+        r_lay.addWidget(self.cb_show_ridge, 2, 0)
+        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 2, 1)
         self.ed_auto_n = make_int_edit(8, minv=4, maxv=100)
-        r_lay.addWidget(self.ed_auto_n, 1, 2)
+        r_lay.addWidget(self.ed_auto_n, 2, 2)
         self.btn_auto = QtWidgets.QPushButton('Auto-place')
-        r_lay.addWidget(self.btn_auto, 1, 3)
+        r_lay.addWidget(self.btn_auto, 2, 3)
         outer.addWidget(ridge_box)
+        self._erf_cache = None       # (key, fit_erf_rows result)
+        # erf refits take seconds: debounce window/stride edits.
+        self._refit_timer = QtCore.QTimer(self)
+        self._refit_timer.setSingleShot(True)
+        self._refit_timer.setInterval(400)
+        self._refit_timer.timeout.connect(self.recompute_ridge)
+        self._update_helper_enabled()
 
         # Bottom control row
         bot = QtWidgets.QHBoxLayout()
@@ -131,6 +170,13 @@ class ChirpDialog(QtWidgets.QDialog):
             lambda v: self.set_and_recompute('tmax', v))
         self.ed_sm.valueChanged.connect(
             lambda v: self.set_and_recompute('smooth', int(v)))
+        self.rb_erf.toggled.connect(
+            lambda on: self.set_and_recompute(
+                'helper', 'erf' if on else 'ridge'))
+        self.ed_r2min.valueChanged.connect(
+            lambda v: self.set_and_recompute('r2min', v))
+        self.ed_stride.valueChanged.connect(
+            lambda v: self.set_and_recompute('stride', int(v)))
         self.btn_rec_ridge.clicked.connect(self.recompute_ridge)
         self.btn_auto.clicked.connect(
             lambda: self.auto_place(int(self.ed_auto_n.value())))
@@ -166,9 +212,18 @@ class ChirpDialog(QtWidgets.QDialog):
         self._im = ax.pcolormesh(app.wavelength, app.delay, base.T,
                                  cmap='turbo', vmin=-cl, vmax=cl,
                                  shading='nearest')
+        # Redrawn when the data changes while open: replace, don't stack,
+        # the colorbar.
+        old_cbar = getattr(self, '_cbar', None)
+        if old_cbar is not None:
+            try:
+                old_cbar.remove()
+            except Exception:
+                pass
+            self._cbar = None
         try:
-            self.canvas_map.fig.colorbar(
-                self._im, ax=ax).set_label(r'$\Delta$A')
+            self._cbar = self.canvas_map.fig.colorbar(self._im, ax=ax)
+            self._cbar.set_label(r'$\Delta$A')
         except Exception:
             pass
         if app.bg_applied:
@@ -325,8 +380,18 @@ class ChirpDialog(QtWidgets.QDialog):
                    label=f't_clicked = {self.last_click_t:.3g}')
         if app.ridge_wl is not None and app.ridge_t is not None:
             jr = int(np.argmin(np.abs(app.ridge_wl - app.wavelength[iw])))
+        else:
+            jr = None
+        # Skip the helper line when its nearest row is far away (a
+        # rejected erf band): it would describe a different wavelength.
+        if jr is not None and app.ridge_wl.size > 1:
+            gap = 2.0 * float(np.median(np.abs(np.diff(app.ridge_wl))))
+            if abs(app.ridge_wl[jr] - app.wavelength[iw]) > gap:
+                jr = None
+        if jr is not None:
             ax.axvline(app.ridge_t[jr], color='g', linestyle='--',
-                       linewidth=1.2, label=f't_ridge = {app.ridge_t[jr]:.3g}')
+                       linewidth=1.2,
+                       label=f't_{self._helper_name()} = {app.ridge_t[jr]:.3g}')
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         lo = max(app.delay[0], self.last_click_t - 2)
@@ -350,16 +415,102 @@ class ChirpDialog(QtWidgets.QDialog):
             app.ridge_tmax = float(val)
         elif field == 'smooth':
             app.ridge_smooth_n = int(val)
+        elif field == 'helper':
+            app.t0_helper = val
+            self._update_helper_enabled()
+        elif field == 'r2min':
+            app.erf_r2_min = float(val)
+        elif field == 'stride':
+            app.erf_stride = int(val)
+        # A change of helper/parameters makes the old curve stale.
+        app.ridge_wl = None
+        app.ridge_t = None
+        self.lbl_erf.setText('')
         if self.cb_show_ridge.isChecked():
-            self.recompute_ridge()
+            slow = (app.t0_helper == 'erf'
+                    and field in ('tmin', 'tmax', 'stride', 'helper'))
+            if slow:
+                self._refit_timer.start()
+            else:
+                self.recompute_ridge()
+        else:
+            self.update_kin_preview()
+
+    def _update_helper_enabled(self):
+        erf = self.rb_erf.isChecked()
+        self.dd_method.setEnabled(not erf)
+        if not erf:
+            self.lbl_erf.setText('')
+        for w in (self.ed_r2min, self.ed_stride, self.lbl_erf):
+            w.setEnabled(erf)
+
+    def _helper_name(self):
+        return 'erf' if self.app.t0_helper == 'erf' else 'ridge'
+
+    def _compute_erf(self, base):
+        """Per-λ erf fits, cached on (window, stride, base data)."""
+        app = self.app
+        # Content-based key: a t0 shift, BG change or same-shape reload
+        # must refit, not reuse old fits.
+        key = (float(app.ridge_tmin), float(app.ridge_tmax),
+               ta_core.erf_stride(app.wavelength.size, app.erf_stride),
+               base.shape, hash(np.ascontiguousarray(base).tobytes()),
+               hash(np.asarray(app.delay, float).tobytes()),
+               hash(np.asarray(app.wavelength, float).tobytes()))
+        if self._erf_cache is None or self._erf_cache[0] != key:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            try:
+                fits = ta_core.fit_erf_rows(
+                    app.wavelength, app.delay, base,
+                    app.ridge_tmin, app.ridge_tmax, app.erf_stride)
+            finally:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            self._erf_cache = (key, fits)
+        fits = self._erf_cache[1]
+        if fits is None:
+            return None
+        return ta_core.erf_t0_accept(fits, app.erf_r2_min,
+                                     app.ridge_smooth_n)
+
+    def _current_base(self):
+        """Fresh BG-corrected base; redraw the map if it changed while the
+        (modeless) dialog was open, e.g. after a crop, BG or t0 shift."""
+        app = self.app
+        base = app.get_chirp_base_data()
+        old = self._base_data
+        if (base.shape != old.shape
+                or not np.array_equal(base, old, equal_nan=True)):
+            self._ridge_line = None     # cleared by draw_map_once
+            self.draw_map_once()
+            self.redraw()
+            self.apply_view_range()
+        return self._base_data
 
     def recompute_ridge(self):
         app = self.app
-        base = app.get_chirp_base_data()
-        wl_r, t_r = ta_core.compute_ridge(
-            app.wavelength, app.delay, base,
-            app.ridge_method, app.ridge_tmin, app.ridge_tmax,
-            app.ridge_smooth_n)
+        self._refit_timer.stop()
+        base = self._current_base()
+        if app.t0_helper == 'erf':
+            res = self._compute_erf(base)
+            if res is None or res['t0'].size == 0:
+                wl_r = t_r = None
+            else:
+                wl_r, t_r = res['wl'], res['t0']
+            if res is None:
+                self.lbl_erf.setText(
+                    f'window holds < {ta_core.ERF_MIN_POINTS} delays')
+            else:
+                n_ok, n = int(res['ok'].sum()), res['ok'].size
+                fw = (np.nanmedian(res['fwhm_all'][res['ok']])
+                      if n_ok else float('nan'))
+                self.lbl_erf.setText(
+                    f'{n_ok}/{n} λ accepted, median FWHM = {fw:.3g} '
+                    f'{app.t_unit_ax()}')
+        else:
+            wl_r, t_r = ta_core.compute_ridge(
+                app.wavelength, app.delay, base,
+                app.ridge_method, app.ridge_tmin, app.ridge_tmax,
+                app.ridge_smooth_n)
         app.ridge_wl = wl_r
         app.ridge_t = t_r
         if self._ridge_line is not None:
@@ -369,9 +520,15 @@ class ChirpDialog(QtWidgets.QDialog):
                 pass
             self._ridge_line = None
         if self.cb_show_ridge.isChecked() and t_r is not None:
-            self._ridge_line, = self.ax_map.plot(
-                wl_r, t_r, color=(0, 0.7, 0), linewidth=1.2)
+            if app.t0_helper == 'erf':
+                self._ridge_line, = self.ax_map.plot(
+                    wl_r, t_r, color=(0, 0.7, 0), linewidth=1.2,
+                    marker='.', markersize=3)
+            else:
+                self._ridge_line, = self.ax_map.plot(
+                    wl_r, t_r, color=(0, 0.7, 0), linewidth=1.2)
         self.canvas_map.draw_idle()
+        self.update_kin_preview()
 
     def toggle_ridge(self):
         if self.cb_show_ridge.isChecked():
@@ -390,14 +547,29 @@ class ChirpDialog(QtWidgets.QDialog):
         if app.ridge_t is None:
             self.recompute_ridge()
         if app.ridge_t is None:
-            warn_box(self, 'No ridge',
-                     'Could not compute ridge (check search window).')
+            if app.t0_helper == 'erf':
+                warn_box(self, 'No t₀ curve',
+                         'No wavelength passed the erf fit (check the '
+                         'search window or lower R² min).')
+            else:
+                warn_box(self, 'No ridge',
+                         'Could not compute ridge (check search window).')
             return
         wls = np.linspace(app.wavelength[0], app.wavelength[-1], N + 2)[1:-1]
-        new_pts = np.zeros((N, 2))
-        for k in range(N):
-            j = int(np.argmin(np.abs(app.ridge_wl - wls[k])))
-            new_pts[k, :] = [app.ridge_wl[j], app.ridge_t[j]]
+        # erf rows can have gaps (rejected λ): drop targets with no row
+        # within half a target spacing, and keep each source row once.
+        half = 0.5 * abs(wls[1] - wls[0]) if N > 1 else np.inf
+        near = [int(np.argmin(np.abs(app.ridge_wl - w))) for w in wls]
+        idx = np.unique([j for j, w in zip(near, wls)
+                         if abs(app.ridge_wl[j] - w) <= half])
+        if idx.size < 4:
+            warn_box(self, 'Too few points',
+                     f'Only {idx.size} of {N} target wavelengths have a '
+                     f'nearby {self._helper_name()} t₀ (≥4 needed). '
+                     'Points were not changed; widen the search window, '
+                     'lower R² min or place points by hand.')
+            return
+        new_pts = np.column_stack([app.ridge_wl[idx], app.ridge_t[idx]])
         app.chirp_pts = new_pts
         self.redraw()
         if not self.cb_show_ridge.isChecked():

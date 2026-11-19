@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.8.0** (최신) | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
+| **v1.9.0** (최신) | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
+| v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Global Analysis DADS·EADS 옆에 시간 영역 결과(성분 kinetics, 순차 모델 population) 추가 |
@@ -35,7 +36,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.8.0      # 최신 버전 (main과 같음)
+git checkout v1.9.0      # 최신 버전 (main과 같음)
+git checkout v1.8.0      # erf t₀ 도우미 이전
 git checkout v1.7.0      # opju 반출 이전
 git checkout v1.6.0      # DADS/EADS 시간 데이터 export 이전
 git checkout v1.5.0      # Crop 설정 기억·CSV 이전
@@ -85,7 +87,7 @@ python ta_main.py
 ### 5.2 보정
 보정은 원본을 바꾸지 않고 매번 다시 계산하며, 순서는 **Background → Chirp → 용매 IRF 빼기 → 마스크**입니다. **Reset Corrections**를 누르면 전부 해제됩니다(불러온 용매 데이터는 유지).
 - **Background**: 앞쪽 N개 delay의 평균 스펙트럼을 뺍니다.
-- **Chirp**: 점 (λ, t₀)을 찍으면 `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d`로 피팅해 각 파장을 시간축으로 이동합니다. 점 목록은 CSV로 저장하고 불러올 수 있습니다.
+- **Chirp**: 점 (λ, t₀)을 찍으면 `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d`로 피팅해 각 파장을 시간축으로 이동합니다. 점 목록은 CSV로 저장하고 불러올 수 있습니다. t₀ 점은 *Auto-place*로 Ridge 또는 erf fit 곡선에서 자동으로 고를 수 있습니다(5.10).
 - **용매 IRF 빼기**: 순수 용매 측정을 불러와 샘플 grid에 맞추고 `ΔA − s·ΔA_solvent`를 계산합니다. scale `s`는 슬라이더나 *Auto*로 정합니다.
 - **Mask**: 파장 구간을 NaN 또는 0으로 바꿉니다.
 - **Set t=0 here**: 크로스헤어 위치를 t=0으로 옮깁니다.
@@ -251,6 +253,22 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 - **Origin 2018 이상**이 설치되어 있어야 하고, Python으로 실행할 때는 `comtypes`가 필요합니다(`pip install comtypes`, exe에는 포함). 실행 중인 Origin이 있으면 저장하지 않으니 Origin을 모두 닫고 누르세요.
 - 데이터가 없는 시트는 빈 시트와 빈 그래프 틀로 만들어집니다. .xlsx/.tsv로 반출해도 opju에는 같은 값이 들어갑니다.
 
+### 5.10 Chirp t₀ 도우미: Ridge / erf fit (v1.9.0)
+
+Chirp Correction 창 아래의 **t₀ Helper**에서 *Auto-place*와 overlay가 쓸 기준 t₀(λ) 곡선을 만드는 방식을 왼쪽 버튼으로 고릅니다.
+
+| 방식 | 계산 | 설정 |
+|---|---|---|
+| **Ridge (argmax)** | 파장마다 탐색 구간에서 \|dA/dt\|(또는 \|ΔA\|)가 가장 큰 delay. λ 방향 이동평균 | Method, Search t, λ-smooth |
+| **erf fit (IRF⊗exp)** | 파장마다 `A·(exp 감쇠 ⊗ 가우시안 IRF)(t; t₀, FWHM, τ) + offset`을 탐색 구간에서 피팅해 t₀를 얻음. λ 방향 median 필터 | Search t·λ-smooth(공유), **R² min**, **λ stride** |
+
+- erf fit은 delay 격자보다 세밀한 t₀를 주고 잡음·진폭 차이에 덜 민감합니다. 합성 데이터 기준 t₀ 오차는 ~10 fs 수준입니다(argmax는 잡음 파장에서 수백 fs).
+- **R² min**(기본 0.9) 미만이거나 t₀가 탐색 구간 끝에 걸린 파장은 제외됩니다. 신호가 약한 파장(부호가 바뀌는 곳 등)은 곡선에 빈 구간으로 남습니다.
+- **λ stride**: 몇 번째 파장마다 피팅할지(0 = 자동, 약 200개 파장). 피팅은 수 초 걸릴 수 있어 Search t·stride를 바꾸면 잠시 뒤 다시 계산합니다. R² min·λ-smooth만 바꾸면 다시 피팅하지 않고 거르기만 합니다.
+- 상태 표시줄에 채택된 파장 수와 FWHM 중앙값(IRF 폭 추정)이 나옵니다.
+- *Auto-place*는 선택한 방식의 곡선에서 N개 점을 고르며, 근처에 채택된 파장이 없는 위치는 건너뜁니다. 4개 미만이면 기존 점을 바꾸지 않고 알립니다.
+- coherent artifact(t₀ 부근 진동)가 강하면 erf fit도 수십 fs 치우칠 수 있으니 점을 확인하고 필요하면 직접 고치세요.
+
 ## 6. 입력 파일 형식
 
 CSV / TSV / DAT / TXT를 자동으로 읽습니다(구분자 자동 인식, 빈 칸과 NaN 처리).
@@ -298,6 +316,11 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.9.0** (2026-11-19)
+- Chirp Correction 창 **t₀ Helper**: 왼쪽 버튼으로 **Ridge (argmax)** / **erf fit (IRF⊗exp)** 선택. erf fit은 파장마다 IRF⊗지수감쇠 + offset을 피팅해 t₀를 구함 (R² min으로 제외, λ stride, median 평활, FWHM 중앙값 표시)
+- Auto-place: 근처에 채택된 파장이 없는 위치는 건너뛰고, 4개 미만이면 기존 점 유지
+- Chirp 창이 열린 채로 crop·BG·t₀ shift를 하면 맵과 기준 곡선을 새 데이터로 다시 계산 (이전에는 crop 후 Recompute에서 종료될 수 있었음)
 
 **v1.8.0** (2026-10-28)
 - **Export OPJU...** 버튼과 **opju dataset info** 창: 반출할 때 임시 저장된 데이터(2D original / chirp-corrected, chirp points, pins, DADS/EADS + kinetics/populations, GA fit/residual)를 확인하고 **저장**하면 `add_function/ta_opju_builder.py`로 .opju 생성

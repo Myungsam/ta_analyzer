@@ -178,6 +178,11 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.ridge_smooth_n = 5
         self.ridge_wl: np.ndarray | None = None
         self.ridge_t: np.ndarray | None = None
+        # t0 helper source: 'ridge' (argmax) or 'erf' (per-λ IRF⊗exp fit).
+        # ridge_wl / ridge_t always hold the active helper's curve.
+        self.t0_helper = 'ridge'
+        self.erf_r2_min = 0.9
+        self.erf_stride = 0          # 0 = auto (~200 wavelengths)
 
         # --- Current selection (crosshair position) ---
         self.selWL = 0.0

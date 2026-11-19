@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.8.0** (latest) | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
+| **v1.9.0** (latest) | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
+| v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
 | v1.5.0 | [`v1.5.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.5.0) | Time-domain results (component kinetics, sequential populations) next to DADS / EADS in Global Analysis |
@@ -35,7 +36,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.8.0      # latest (same as main)
+git checkout v1.9.0      # latest (same as main)
+git checkout v1.8.0      # before the erf t₀ helper
 git checkout v1.7.0      # before opju export
 git checkout v1.6.0      # before DADS/EADS time-data export
 git checkout v1.5.0      # before Crop memory / CSV
@@ -85,7 +87,7 @@ Clicking the 2D map updates the Spectrum (selected t) and Kinetics (selected λ)
 ### 5.2 Corrections
 Corrections never modify the loaded data; they are recomputed in the order **background → chirp → solvent IRF subtraction → masks**. **Reset Corrections** turns them all off (a loaded solvent file is kept).
 - **Background**: subtracts the mean spectrum of the first N delays.
-- **Chirp**: points (λ, t₀) are fitted with `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d` and every wavelength is shifted in time. Points can be saved to and loaded from CSV.
+- **Chirp**: points (λ, t₀) are fitted with `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d` and every wavelength is shifted in time. Points can be saved to and loaded from CSV. *Auto-place* can pick t₀ points from a Ridge or erf-fit curve (section 5.10).
 - **Solvent IRF subtraction**: loads a pure-solvent measurement, aligns it to the sample grid and computes `ΔA − s·ΔA_solvent`. Set the scale `s` with the slider or *Auto*.
 - **Mask**: sets wavelength ranges to NaN or 0.
 - **Set t=0 here**: moves t=0 to the crosshair position.
@@ -251,6 +253,22 @@ Saving a CSV with one of the exports below also **stages** the same data for the
 - Needs **Origin 2018 or later**; running from Python also needs `comtypes` (`pip install comtypes`; bundled in the exe). Saving is refused while Origin is running — close all Origin windows first.
 - Sheets without data are created empty with an empty graph frame. Exports saved as .xlsx/.tsv put the same values into the opju.
 
+### 5.10 Chirp t₀ helper: Ridge / erf fit (v1.9.0)
+
+In the Chirp Correction window, the **t₀ Helper** box selects (buttons on the left) how the reference t₀(λ) curve used by *Auto-place* and the overlay is built.
+
+| Method | Computation | Settings |
+|---|---|---|
+| **Ridge (argmax)** | Per wavelength, the delay of maximum \|dA/dt\| (or \|ΔA\|) in the search window; moving average along λ | Method, Search t, λ-smooth |
+| **erf fit (IRF⊗exp)** | Per wavelength, fit `A·(exp decay ⊗ Gaussian IRF)(t; t₀, FWHM, τ) + offset` in the search window and take t₀; median filter along λ | Search t and λ-smooth (shared), **R² min**, **λ stride** |
+
+- The erf fit resolves t₀ finer than the delay grid and is less sensitive to noise and amplitude. On synthetic data its t₀ error is ~10 fs (argmax: hundreds of fs on noisy wavelengths).
+- Wavelengths with R² below **R² min** (default 0.9), or with t₀ stuck at a window edge, are dropped. Weak wavelengths (e.g. where the signal changes sign) leave gaps in the curve.
+- **λ stride**: fit every N-th wavelength (0 = auto, about 200 wavelengths). Fitting can take a few seconds, so changes to Search t or stride recompute after a short pause. Changing only R² min or λ-smooth re-filters without refitting.
+- The status text shows the number of accepted wavelengths and the median FWHM (an IRF width estimate).
+- *Auto-place* picks N points from the selected curve and skips targets with no accepted wavelength nearby. If fewer than 4 remain, the existing points are kept and a warning is shown.
+- A strong coherent artifact (oscillation near t₀) can still bias the erf fit by tens of fs; check the points and correct them by hand if needed.
+
 ## 6. Input file formats
 
 CSV / TSV / DAT / TXT are read automatically (delimiter detection, blanks and NaN handled).
@@ -298,6 +316,11 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.9.0** (2026-11-19)
+- Chirp Correction **t₀ Helper**: choose **Ridge (argmax)** or **erf fit (IRF⊗exp)** with the buttons on the left. The erf fit fits an IRF-convolved exponential + offset per wavelength to get t₀ (R² min rejection, λ stride, median smoothing, median FWHM shown)
+- Auto-place skips targets with no accepted wavelength nearby and keeps the existing points if fewer than 4 remain
+- A crop, BG or t₀ shift while the Chirp window is open now redraws the map and recomputes the helper curve (a Recompute after a crop could previously close the program)
 
 **v1.8.0** (2026-10-28)
 - **Export OPJU...** button and **opju dataset info** window: review the data staged by the exports (2D original / chirp-corrected, chirp points, pins, DADS/EADS + kinetics/populations, GA fit/residual); **저장** builds the .opju with `add_function/ta_opju_builder.py`

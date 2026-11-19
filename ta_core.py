@@ -1134,6 +1134,159 @@ def compute_ridge(wavelength, delay, data,
     return wl.copy(), r_t
 
 
+ERF_AUTO_POINTS = 200
+ERF_MIN_POINTS = 8
+
+
+def erf_stride(n_wl: int, stride: int = 0) -> int:
+    """Wavelength stride for :func:`compute_erf_t0` (0 = auto, ~200 rows)."""
+    if stride and stride > 0:
+        return int(stride)
+    return max(1, int(np.ceil(n_wl / ERF_AUTO_POINTS)))
+
+
+def _fit_erf_trace(t: np.ndarray, y: np.ndarray, t_min: float,
+                   t_max: float):
+    """Fit y ≈ A·(exp ⊗ Gaussian IRF)(t; t0, fwhm, tau) + c on one trace.
+
+    A and c are solved linearly for each (t0, fwhm, tau) trial (variable
+    projection); the three non-linear parameters are bounded:
+    t0 ∈ [t_min, t_max], fwhm ∈ [dt_min, span], log tau up to 1e3·span
+    (≈ a pure erf step).  Returns (t0, fwhm, tau, A, c, r2) or None.
+    """
+    from scipy.optimize import least_squares
+    span = float(t_max - t_min)
+    dts = np.diff(t)
+    dt_min = float(np.min(dts[dts > 0])) if np.any(dts > 0) else span / 50
+    fw_lo, fw_hi = max(dt_min * 0.5, span * 1e-3), span
+    tau_lo, tau_hi = fw_lo * 0.5, span * 1e3
+    ones = np.ones_like(t)
+
+    def lin(p):
+        c = exp_irf_conv(t, np.exp(p[2]), p[0], np.exp(p[1]))
+        M = np.column_stack([c, ones])
+        coef, *_ = np.linalg.lstsq(M, y, rcond=None)
+        return M @ coef - y, coef
+
+    def resid(p):
+        return lin(p)[0]
+
+    # Start t0 at the steepest point of a lightly smoothed trace
+    # (edge-clamped so a signal still on at t_max makes no fake edge step).
+    from scipy.ndimage import uniform_filter1d
+    ys = uniform_filter1d(y, size=3, mode='nearest')
+    slope = np.abs(np.diff(ys) / np.where(dts > 0, dts, np.inf))
+    t0_init = float(0.5 * (t[:-1] + t[1:])[int(np.argmax(slope))])
+    fw_init = float(np.clip(max(3 * dt_min, span / 15), fw_lo, fw_hi))
+    lo = [t_min, np.log(fw_lo), np.log(tau_lo)]
+    hi = [t_max, np.log(fw_hi), np.log(tau_hi)]
+    best = None
+    for tau0 in (span * 0.3, span * 30.0):
+        x0 = [float(np.clip(t0_init, t_min, t_max)), np.log(fw_init),
+              float(np.clip(np.log(tau0), lo[2], hi[2]))]
+        try:
+            r = least_squares(resid, x0, bounds=(lo, hi), method='trf',
+                              x_scale=[max(span / 10, 1e-12), 1.0, 1.0],
+                              max_nfev=200)
+        except Exception:
+            continue
+        if best is None or r.cost < best.cost:
+            best = r
+    if best is None:
+        return None
+    res, coef = lin(best.x)
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - float(np.sum(res ** 2)) / ss_tot if ss_tot > 0 else 0.0
+    t0, fw, tau = best.x[0], np.exp(best.x[1]), np.exp(best.x[2])
+    return float(t0), float(fw), float(tau), float(coef[0]), float(coef[1]), r2
+
+
+def compute_erf_t0(wavelength, delay, data, t_min: float = -0.5,
+                   t_max: float = 1.5, smooth_n: int = 5, stride: int = 0,
+                   r2_min: float = 0.9):
+    """Per-wavelength t0 from an IRF-convolved exponential (erf) fit.
+
+    Each sampled row (every ``stride``-th wavelength; 0 = auto ≈ 200 rows)
+    is fitted inside [t_min, t_max] with :func:`_fit_erf_trace`; then
+    :func:`erf_t0_accept` filters and smooths the result.
+
+    Returns the :func:`erf_t0_accept` dict, or None when the window holds
+    fewer than ``ERF_MIN_POINTS`` delays.
+    """
+    fits = fit_erf_rows(wavelength, delay, data, t_min, t_max, stride)
+    if fits is None:
+        return None
+    return erf_t0_accept(fits, r2_min, smooth_n)
+
+
+def fit_erf_rows(wavelength, delay, data, t_min: float, t_max: float,
+                 stride: int = 0):
+    """Raw per-row erf fits (the slow part of :func:`compute_erf_t0`).
+
+    Returns a dict with ``wl_all``, ``t0_all``, ``fwhm_all``, ``r2_all``
+    and the window edges ``t_lo``/``t_hi``, or None for a too-short window.
+    """
+    wl = np.asarray(wavelength, float).ravel()
+    t = np.asarray(delay, float).ravel()
+    D = np.asarray(data, float)
+    m = (t >= t_min) & (t <= t_max)
+    if np.count_nonzero(m) < ERF_MIN_POINTS:
+        return None
+    t_sub = t[m]
+    lo_t, hi_t = float(t_sub[0]), float(t_sub[-1])
+    rows = np.arange(0, wl.size, erf_stride(wl.size, stride))
+    n = rows.size
+    t0_all = np.full(n, np.nan)
+    fw_all = np.full(n, np.nan)
+    r2_all = np.full(n, np.nan)
+    for k, i in enumerate(rows):
+        y = D[i, m]
+        fin = np.isfinite(y)
+        # 5 model parameters (t0, fwhm, tau, A, c): need clear redundancy.
+        if fin.sum() < ERF_MIN_POINTS or np.ptp(y[fin]) == 0:
+            continue
+        out = _fit_erf_trace(t_sub[fin], y[fin], lo_t, hi_t)
+        if out is None:
+            continue
+        t0_all[k], fw_all[k], r2_all[k] = out[0], out[1], out[5]
+    return {'wl_all': wl[rows], 't0_all': t0_all, 'fwhm_all': fw_all,
+            'r2_all': r2_all, 't_lo': lo_t, 't_hi': hi_t}
+
+
+def erf_t0_accept(fits: dict, r2_min: float = 0.9, smooth_n: int = 5):
+    """Accept rows of :func:`fit_erf_rows` and median-smooth their t0.
+
+    A row is accepted when R² ≥ ``r2_min`` and t0 is not pinned within 1 %
+    of a window edge.  Accepted t0 values are median-filtered over
+    ``smooth_n`` points along λ (robust to single bad rows), separately
+    within each run of consecutive accepted rows so the filter never
+    bridges a rejected band.
+
+    Returns ``fits`` plus ``wl``/``t0`` (accepted, smoothed) and ``ok``.
+    """
+    t0_all, r2_all = fits['t0_all'], fits['r2_all']
+    edge = 0.01 * (fits['t_hi'] - fits['t_lo'])
+    with np.errstate(invalid='ignore'):
+        ok = (np.isfinite(t0_all) & (r2_all >= r2_min)
+              & (t0_all > fits['t_lo'] + edge)
+              & (t0_all < fits['t_hi'] - edge))
+    t0_ok = t0_all[ok].copy()
+    if smooth_n > 1:
+        from scipy.ndimage import median_filter
+        idx = np.flatnonzero(ok)
+        breaks = np.flatnonzero(np.diff(idx) > 1) + 1
+        start = 0
+        for stop in list(breaks) + [idx.size]:
+            if stop - start > 1:
+                seg = t0_ok[start:stop]
+                t0_ok[start:stop] = median_filter(
+                    seg, size=min(int(smooth_n), seg.size), mode='nearest')
+            start = stop
+    out = dict(fits)
+    out.update(wl=fits['wl_all'][ok], t0=t0_ok, ok=ok)
+    return out
+
+
 # =====================================================================
 # Global analysis: IRF-convolved exponential, fitting, EADS
 # =====================================================================

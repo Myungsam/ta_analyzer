@@ -62,7 +62,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | | `ta_load_custom.py` | 777 | `CustomLoadDialog`: 스프레드시트형 미리보기에서 X(λ), Y(t), Z(ΔA) 영역을 드래그로 지정. 자동 전치, 자동 감지 기능 포함 |
 | | `ta_dialogs_a.py` → `LoadAverageDialog` | | 여러 파일을 선택했을 때 평균을 내고 저장 또는 로드 |
 | **Correction dialogs** | `ta_dialogs_a.py` | 1,919 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
-| | `ta_chirp.py` | 446 | `ChirpDialog`: 클릭 또는 ridge 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
+| | `ta_chirp.py` | 621 | `ChirpDialog`: 클릭 또는 t₀ 도우미(ridge argmax / 파장별 erf fit) 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
 | **Analysis dialogs** | `ta_ga.py` | 2,038 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
 | | `ta_svd.py` | 419 | `SVDDialog`: σ 스펙트럼, U/V 벡터, rank-N 재구성과 residual |
@@ -118,7 +118,7 @@ graph TD
 | 작업 데이터 | `wavelength`, `delay`, `deltaA_raw` | crop이나 보간이 반영된 "raw". 보정 전 값 |
 | 표시/분석 데이터 | `deltaA` | `recompute()`가 만든 보정된 행렬. **모든 분석 다이얼로그의 입력** |
 | Background | `bg_applied`, `bg_spectrum (M,)`, `bg_n` | 앞쪽 N개 delay(pre-trigger)의 평균 스펙트럼 |
-| Chirp | `chirp_applied`, `chirp_pts (K×2)`, `chirp_params [a,b,c,d]`, `chirp_fit_rms`, `ridge_*` | t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d |
+| Chirp | `chirp_applied`, `chirp_pts (K×2)`, `chirp_params [a,b,c,d]`, `chirp_fit_rms`, `ridge_*`, `t0_helper` ('ridge'/'erf'), `erf_r2_min`, `erf_stride` | t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d |
 | Solvent IRF | `sub_irf_applied`, `sub_irf_scale`, `sub_irf_solv_{wl,t,data}`, `sub_irf_aligned` | 용매 원본(자기 grid 기준)과 샘플 grid에 정렬한 캐시 |
 | Mask | `masked_regions: [(wl1, wl2, 'nan'|'zero')]` | |
 | Zero-time | `tZeroShift` | 누적된 delay 축 이동량 |
