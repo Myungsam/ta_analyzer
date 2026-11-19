@@ -62,7 +62,7 @@ Transient Absorption(TA) 측정 데이터 분석 프로그램의 전체 로직�
 | | `ta_load_custom.py` | 777 | `CustomLoadDialog`: 스프레드시트형 미리보기에서 X(λ), Y(t), Z(ΔA) 영역을 드래그로 지정. 자동 전치, 자동 감지 기능 포함 |
 | | `ta_dialogs_a.py` → `LoadAverageDialog` | | 여러 파일을 선택했을 때 평균을 내고 저장 또는 로드 |
 | **Correction dialogs** | `ta_dialogs_a.py` | 1,919 | `BackgroundDialog`, `CropDialog`(λ/t 범위, λ축 resampling과 moving average, delay/λ drop 뒤 보간), `MaskDialog` |
-| | `ta_chirp.py` | 621 | `ChirpDialog`: 클릭 또는 t₀ 도우미(ridge argmax / 파장별 erf fit) 자동 배치로 점을 찍고, 4-파라미터 Sellmeier 피팅 |
+| | `ta_chirp.py` | 700 | `ChirpDialog`: 클릭 또는 t₀ 도우미(ridge argmax / 파장별 erf fit) 자동 배치로 점을 찍고, 표에서 고른 점 삭제, 4-파라미터 Sellmeier 피팅 |
 | | `ta_solvent_irf.py` | 542 | `SolventIRFDialog`: 순수 용매 측정을 로드해 정렬하고, scale 조절(자동 추정 포함) 후 빼기 |
 | **Analysis dialogs** | `ta_ga.py` | 2,038 | `GlobalAnalysisDialog`: multi-exp(+stretched) ⊗ Gaussian IRF 글로벌 피팅, DADS/EADS, 장치 선택, Stop |
 | | `ta_svd.py` | 419 | `SVDDialog`: σ 스펙트럼, U/V 벡터, rank-N 재구성과 residual |

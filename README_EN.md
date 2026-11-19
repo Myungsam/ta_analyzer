@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.9.1** (latest) | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper: settings shared by both methods (Search t, λ-smooth) moved to their own row |
+| **v1.10.0** (latest) | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Remove selected points from the Chirp points table (Remove Selected / Delete key); point editing buttons moved below the table |
+| v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper: settings shared by both methods (Search t, λ-smooth) moved to their own row |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
@@ -37,7 +38,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.9.1      # latest (same as main)
+git checkout v1.10.0     # latest (same as main)
+git checkout v1.9.1      # before selected-point removal
 git checkout v1.9.0      # before the t₀ Helper layout cleanup
 git checkout v1.8.0      # before the erf t₀ helper
 git checkout v1.7.0      # before opju export
@@ -90,6 +92,7 @@ Clicking the 2D map updates the Spectrum (selected t) and Kinetics (selected λ)
 Corrections never modify the loaded data; they are recomputed in the order **background → chirp → solvent IRF subtraction → masks**. **Reset Corrections** turns them all off (a loaded solvent file is kept).
 - **Background**: subtracts the mean spectrum of the first N delays.
 - **Chirp**: points (λ, t₀) are fitted with `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d` and every wavelength is shifted in time. Points can be saved to and loaded from CSV. *Auto-place* can pick t₀ points from a Ridge or erf-fit curve (section 5.10).
+  - Buttons below the points table: **Remove Selected** (removes the rows selected in the table; Ctrl/Shift for several; the Delete key in the table does the same) · **Remove Last** · **Clear Points** · **Save Points** · **Load Points**. Selected points are circled in red on the 2D map. The row number on the left is the point index.
 - **Solvent IRF subtraction**: loads a pure-solvent measurement, aligns it to the sample grid and computes `ΔA − s·ΔA_solvent`. Set the scale `s` with the slider or *Auto*.
 - **Mask**: sets wavelength ranges to NaN or 0.
 - **Set t=0 here**: moves t=0 to the crosshair position.
@@ -319,6 +322,10 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.10.0** (2026-11-19)
+- Chirp Correction: select rows in the points table and remove specific points with **Remove Selected** or the Delete key (several rows at once; selected points circled in red on the map)
+- Point editing / file buttons (Remove Selected / Remove Last / Clear / Save / Load Points) moved directly below the points table
 
 **v1.9.1** (2026-11-19)
 - Chirp t₀ Helper: Search t, λ-smooth and Recompute, shared by both methods, moved to a top **Common (both methods)** row, separated by a line from the Ridge / erf fit settings

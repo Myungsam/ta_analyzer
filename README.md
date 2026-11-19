@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.9.1** (최신) | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper에서 두 방식 공통 설정(Search t, λ-smooth)을 별도 줄로 분리 |
+| **v1.10.0** (최신) | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Chirp points 표에서 고른 점 삭제(Remove Selected / Delete 키), 점 편집 버튼을 표 아래로 이동 |
+| v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper에서 두 방식 공통 설정(Search t, λ-smooth)을 별도 줄로 분리 |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
@@ -37,7 +38,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.9.1      # 최신 버전 (main과 같음)
+git checkout v1.10.0     # 최신 버전 (main과 같음)
+git checkout v1.9.1      # 점 선택 삭제 이전
 git checkout v1.9.0      # t₀ Helper 배치 정리 이전
 git checkout v1.8.0      # erf t₀ 도우미 이전
 git checkout v1.7.0      # opju 반출 이전
@@ -90,6 +92,7 @@ python ta_main.py
 보정은 원본을 바꾸지 않고 매번 다시 계산하며, 순서는 **Background → Chirp → 용매 IRF 빼기 → 마스크**입니다. **Reset Corrections**를 누르면 전부 해제됩니다(불러온 용매 데이터는 유지).
 - **Background**: 앞쪽 N개 delay의 평균 스펙트럼을 뺍니다.
 - **Chirp**: 점 (λ, t₀)을 찍으면 `t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d`로 피팅해 각 파장을 시간축으로 이동합니다. 점 목록은 CSV로 저장하고 불러올 수 있습니다. t₀ 점은 *Auto-place*로 Ridge 또는 erf fit 곡선에서 자동으로 고를 수 있습니다(5.10).
+  - 점 목록 표 아래 버튼: **Remove Selected**(표에서 고른 행 삭제, Ctrl/Shift로 여러 행, 표에서 Delete 키도 가능) · **Remove Last** · **Clear Points** · **Save Points** · **Load Points**. 고른 점은 2D 맵에 빨간 원으로 표시됩니다. 표 왼쪽 번호가 점 index입니다.
 - **용매 IRF 빼기**: 순수 용매 측정을 불러와 샘플 grid에 맞추고 `ΔA − s·ΔA_solvent`를 계산합니다. scale `s`는 슬라이더나 *Auto*로 정합니다.
 - **Mask**: 파장 구간을 NaN 또는 0으로 바꿉니다.
 - **Set t=0 here**: 크로스헤어 위치를 t=0으로 옮깁니다.
@@ -319,6 +322,10 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.10.0** (2026-11-19)
+- Chirp Correction: 점 목록 표에서 행을 골라 **Remove Selected** 또는 Delete 키로 특정 점 삭제 (여러 행 선택 가능, 고른 점은 맵에 빨간 원 표시)
+- 점 편집·파일 버튼(Remove Selected / Remove Last / Clear / Save / Load Points)을 점 목록 표 바로 아래로 이동
 
 **v1.9.1** (2026-11-19)
 - Chirp t₀ Helper: 두 방식이 공유하는 Search t·λ-smooth·Recompute를 맨 위 **Common (both methods)** 줄로 옮기고 구분선으로 Ridge / erf fit 설정과 분리

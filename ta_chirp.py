@@ -4,7 +4,7 @@ TA Analyzer GUI - Chirp correction dialog.
 from __future__ import annotations
 
 import numpy as np
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 
 from ta_widgets import (
     MplCanvas, make_label, make_double_edit, make_int_edit,
@@ -46,7 +46,33 @@ class ChirpDialog(QtWidgets.QDialog):
         self.tbl.setHorizontalHeaderLabels(
             [u'λ (nm)', f't ({app.t_unit_txt()})'])
         self.tbl.horizontalHeader().setStretchLastSection(True)
+        # Row header = point index (1-based).  Rows are selected whole
+        # (Ctrl/Shift for several) and removed with Remove Selected / Del.
+        self.tbl.verticalHeader().setVisible(True)
+        self.tbl.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.tbl.setEditTriggers(
+            QtWidgets.QAbstractItemView.NoEditTriggers)
         right.addWidget(self.tbl, stretch=1)
+
+        # Point editing / file buttons directly below the points table
+        pts_btns = QtWidgets.QGridLayout()
+        self.btn_del_sel = QtWidgets.QPushButton('Remove Selected')
+        self.btn_del_sel.setToolTip(
+            'Remove the points selected in the table (Del key). '
+            'Ctrl/Shift-click selects several rows.')
+        self.btn_undo = QtWidgets.QPushButton('Remove Last')
+        self.btn_clr = QtWidgets.QPushButton('Clear Points')
+        self.btn_save_pts = QtWidgets.QPushButton('Save Points')
+        self.btn_load_pts = QtWidgets.QPushButton('Load Points')
+        pts_btns.addWidget(self.btn_del_sel, 0, 0)
+        pts_btns.addWidget(self.btn_undo, 0, 1)
+        pts_btns.addWidget(self.btn_clr, 0, 2)
+        pts_btns.addWidget(self.btn_save_pts, 1, 0)
+        pts_btns.addWidget(self.btn_load_pts, 1, 1)
+        right.addLayout(pts_btns)
 
         self.canvas_kin = MplCanvas(self, figsize=(5, 2))
         self.ax_kin = self.canvas_kin.ax
@@ -152,14 +178,6 @@ class ChirpDialog(QtWidgets.QDialog):
         bot.addWidget(self.ed_view_tmax)
         self.btn_view_reset = QtWidgets.QPushButton('Reset view')
         bot.addWidget(self.btn_view_reset)
-        self.btn_undo = QtWidgets.QPushButton('Remove Last')
-        bot.addWidget(self.btn_undo)
-        self.btn_clr = QtWidgets.QPushButton('Clear Points')
-        bot.addWidget(self.btn_clr)
-        self.btn_save_pts = QtWidgets.QPushButton('Save Points')
-        bot.addWidget(self.btn_save_pts)
-        self.btn_load_pts = QtWidgets.QPushButton('Load Points')
-        bot.addWidget(self.btn_load_pts)
         bot.addStretch(1)
         self.btn_cancel = QtWidgets.QPushButton('Cancel')
         bot.addWidget(self.btn_cancel)
@@ -174,6 +192,7 @@ class ChirpDialog(QtWidgets.QDialog):
         self._ridge_line = None
         self._fit_line_on_map = None
         self._pts_scatter = None
+        self._sel_scatter = None
 
         # Wire
         self._cid = self.canvas_map.mpl_connect(
@@ -197,6 +216,11 @@ class ChirpDialog(QtWidgets.QDialog):
         self.btn_rec_ridge.clicked.connect(self.recompute_ridge)
         self.btn_auto.clicked.connect(
             lambda: self.auto_place(int(self.ed_auto_n.value())))
+        self.btn_del_sel.clicked.connect(self.remove_selected)
+        self.tbl.itemSelectionChanged.connect(self._on_selection_changed)
+        sc = QtWidgets.QShortcut(QtGui.QKeySequence.Delete, self.tbl)
+        sc.setContext(QtCore.Qt.WidgetShortcut)
+        sc.activated.connect(self.remove_selected)
         self.btn_undo.clicked.connect(self.undo_pt)
         self.btn_clr.clicked.connect(self.clear_pts)
         self.btn_save_pts.clicked.connect(self.save_pts)
@@ -223,6 +247,9 @@ class ChirpDialog(QtWidgets.QDialog):
         self._base_data = base
         ax = self.ax_map
         ax.clear()
+        # ax.clear() detached every overlay artist; drop the references.
+        self._pts_scatter = self._fit_line_on_map = None
+        self._sel_scatter = self._ridge_line = None
         cl = np.nanmax(np.abs(base))
         if not np.isfinite(cl) or cl == 0:
             cl = 1.0
@@ -262,6 +289,39 @@ class ChirpDialog(QtWidgets.QDialog):
         self.last_click_wl, self.last_click_t = pt
         self.redraw()
         self.update_kin_preview()
+
+    def _selected_rows(self):
+        return sorted({ix.row() for ix in
+                       self.tbl.selectionModel().selectedRows()})
+
+    def remove_selected(self):
+        """Remove the points whose table rows are selected."""
+        rows = self._selected_rows()
+        n = len(self.app.chirp_pts)
+        rows = [r for r in rows if 0 <= r < n]
+        if not rows:
+            return
+        self.app.chirp_pts = np.delete(self.app.chirp_pts, rows, axis=0)
+        self.redraw()
+
+    def _on_selection_changed(self):
+        """Highlight the selected points on the 2D map."""
+        rows = self._selected_rows()
+        self.btn_del_sel.setEnabled(bool(rows))
+        if self._sel_scatter is not None:
+            try:
+                self._sel_scatter.remove()
+            except Exception:
+                pass
+            self._sel_scatter = None
+        pts = self.app.chirp_pts
+        rows = [r for r in rows if r < len(pts)]
+        if rows:
+            self._sel_scatter = self.ax_map.scatter(
+                pts[rows, 0], pts[rows, 1], marker='o', s=160,
+                facecolors='none', edgecolors='r', linewidths=2.0,
+                zorder=6)
+        self.canvas_map.draw_idle()
 
     def undo_pt(self):
         if len(self.app.chirp_pts) > 0:
@@ -329,7 +389,7 @@ class ChirpDialog(QtWidgets.QDialog):
     def redraw(self):
         app = self.app
         # Remove old artists
-        for attr in ('_pts_scatter', '_fit_line_on_map'):
+        for attr in ('_pts_scatter', '_fit_line_on_map', '_sel_scatter'):
             art = getattr(self, attr, None)
             if art is not None:
                 try:
@@ -348,6 +408,8 @@ class ChirpDialog(QtWidgets.QDialog):
                 QtWidgets.QTableWidgetItem(f'{pts[row, 0]:.2f}'))
             self.tbl.setItem(r, 1,
                 QtWidgets.QTableWidgetItem(f'{pts[row, 1]:.4g}'))
+        # Repopulating drops the selection (and its map highlight).
+        self.btn_del_sel.setEnabled(bool(self._selected_rows()))
 
         if pts.shape[0] > 0:
             self._pts_scatter = self.ax_map.scatter(
