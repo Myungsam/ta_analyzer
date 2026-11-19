@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.9.0** (latest) | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
+| **v1.9.1** (latest) | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper: settings shared by both methods (Search t, λ-smooth) moved to their own row |
+| v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS saves the spectra and the kinetics/populations separately |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop window remembers pinned delays/wavelengths; Apply auto-saves Crop_information.csv |
@@ -36,7 +37,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.9.0      # latest (same as main)
+git checkout v1.9.1      # latest (same as main)
+git checkout v1.9.0      # before the t₀ Helper layout cleanup
 git checkout v1.8.0      # before the erf t₀ helper
 git checkout v1.7.0      # before opju export
 git checkout v1.6.0      # before DADS/EADS time-data export
@@ -256,6 +258,7 @@ Saving a CSV with one of the exports below also **stages** the same data for the
 ### 5.10 Chirp t₀ helper: Ridge / erf fit (v1.9.0)
 
 In the Chirp Correction window, the **t₀ Helper** box selects (buttons on the left) how the reference t₀(λ) curve used by *Auto-place* and the overlay is built.
+Search t, λ-smooth and Recompute on the top **Common (both methods)** row apply to both methods; the rows below the separator hold only method-specific settings (v1.9.1).
 
 | Method | Computation | Settings |
 |---|---|---|
@@ -316,6 +319,9 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.9.1** (2026-11-19)
+- Chirp t₀ Helper: Search t, λ-smooth and Recompute, shared by both methods, moved to a top **Common (both methods)** row, separated by a line from the Ridge / erf fit settings
 
 **v1.9.0** (2026-11-19)
 - Chirp Correction **t₀ Helper**: choose **Ridge (argmax)** or **erf fit (IRF⊗exp)** with the buttons on the left. The erf fit fits an IRF-convolved exponential + offset per wavelength to get t₀ (R² min rejection, λ stride, median smoothing, median FWHM shown)

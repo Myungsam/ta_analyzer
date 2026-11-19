@@ -55,19 +55,46 @@ class ChirpDialog(QtWidgets.QDialog):
         main_row.addLayout(right, stretch=2)
         outer.addLayout(main_row, stretch=1)
 
-        # t0 helper: option buttons on the left, one row per method.
-        # Row 0 = ridge (argmax) + shared search window / λ-smooth,
-        # row 1 = per-λ erf (IRF⊗exp) fit, row 2 = overlay / Auto-place.
+        # t0 helper.  Row 0 = settings shared by both methods (search
+        # window, λ-smooth, Recompute), set apart by a line from the
+        # method rows below, which have their option buttons on the left:
+        # row 2 = ridge (argmax), row 3 = per-λ erf (IRF⊗exp) fit.
+        # Row 5 = overlay / Auto-place.
         ridge_box = QtWidgets.QGroupBox('t₀ Helper (reference t₀ curve)')
         r_lay = QtWidgets.QGridLayout(ridge_box)
+
+        lbl_common = QtWidgets.QLabel('Common (both methods):')
+        lbl_common.setStyleSheet('font-weight: bold;')
+        r_lay.addWidget(lbl_common, 0, 0)
+        r_lay.addWidget(make_label(f'Search t ({app.t_unit_txt()}):', 'right'), 0, 1)
+        self.ed_rtmin = make_double_edit(app.ridge_tmin)
+        r_lay.addWidget(self.ed_rtmin, 0, 2)
+        r_lay.addWidget(make_label('to', 'center'), 0, 3)
+        self.ed_rtmax = make_double_edit(app.ridge_tmax)
+        r_lay.addWidget(self.ed_rtmax, 0, 4)
+        r_lay.addWidget(make_label(u'λ-smooth:', 'right'), 0, 5)
+        self.ed_sm = make_int_edit(app.ridge_smooth_n, minv=1, maxv=200)
+        self.ed_sm.setToolTip('Smoothing along λ: moving average for Ridge, '
+                              'median filter for erf fit.')
+        r_lay.addWidget(self.ed_sm, 0, 6)
+        self.btn_rec_ridge = QtWidgets.QPushButton('Recompute')
+        r_lay.addWidget(self.btn_rec_ridge, 0, 7)
+
+        def hline():
+            ln = QtWidgets.QFrame()
+            ln.setFrameShape(QtWidgets.QFrame.HLine)
+            ln.setFrameShadow(QtWidgets.QFrame.Sunken)
+            return ln
+        r_lay.addWidget(hline(), 1, 0, 1, 10)
+
         self.rb_ridge = QtWidgets.QRadioButton('Ridge (argmax)')
         self.rb_erf = QtWidgets.QRadioButton('erf fit (IRF⊗exp)')
         self.rb_ridge.setToolTip(
-            'Per wavelength: delay of max |dA/dt| or |ΔA| in the search '
-            'window; moving-average over λ-smooth points.')
+            'Per wavelength: delay of max |dA/dt| or |ΔA| in the common '
+            'search window; moving-average over λ-smooth points.')
         self.rb_erf.setToolTip(
             'Per wavelength: fit A·(exp ⊗ Gaussian IRF) + offset in the '
-            'search window; t₀ from the fit. Rows with R² below the '
+            'common search window; t₀ from the fit. Rows with R² below the '
             'minimum or t₀ at a window edge are dropped; λ-smooth applies '
             'a median filter.')
         self._helper_group = QtWidgets.QButtonGroup(self)
@@ -75,45 +102,35 @@ class ChirpDialog(QtWidgets.QDialog):
         self._helper_group.addButton(self.rb_erf)
         (self.rb_erf if app.t0_helper == 'erf'
          else self.rb_ridge).setChecked(True)
-        r_lay.addWidget(self.rb_ridge, 0, 0)
-        r_lay.addWidget(self.rb_erf, 1, 0)
+        r_lay.addWidget(self.rb_ridge, 2, 0)
+        r_lay.addWidget(self.rb_erf, 3, 0)
 
-        r_lay.addWidget(make_label('Method:', 'right'), 0, 1)
+        r_lay.addWidget(make_label('Method:', 'right'), 2, 1)
         self.dd_method = QtWidgets.QComboBox()
         self.dd_method.addItems(['max|dA/dt|', 'max|deltaA|'])
         self.dd_method.setCurrentText(app.ridge_method)
-        r_lay.addWidget(self.dd_method, 0, 2)
-        r_lay.addWidget(make_label(f'Search t ({app.t_unit_txt()}):', 'right'), 0, 3)
-        self.ed_rtmin = make_double_edit(app.ridge_tmin)
-        r_lay.addWidget(self.ed_rtmin, 0, 4)
-        r_lay.addWidget(make_label('to', 'center'), 0, 5)
-        self.ed_rtmax = make_double_edit(app.ridge_tmax)
-        r_lay.addWidget(self.ed_rtmax, 0, 6)
-        r_lay.addWidget(make_label(u'λ-smooth:', 'right'), 0, 7)
-        self.ed_sm = make_int_edit(app.ridge_smooth_n, minv=1, maxv=200)
-        r_lay.addWidget(self.ed_sm, 0, 8)
-        self.btn_rec_ridge = QtWidgets.QPushButton('Recompute')
-        r_lay.addWidget(self.btn_rec_ridge, 0, 9)
+        r_lay.addWidget(self.dd_method, 2, 2)
 
-        r_lay.addWidget(make_label('R² min:', 'right'), 1, 1)
+        r_lay.addWidget(make_label('R² min:', 'right'), 3, 1)
         self.ed_r2min = make_double_edit(app.erf_r2_min, decimals=3,
                                          minv=0.0, maxv=0.999)
         self.ed_r2min.setSingleStep(0.01)
-        r_lay.addWidget(self.ed_r2min, 1, 2)
-        r_lay.addWidget(make_label(u'λ stride (0=auto):', 'right'), 1, 3)
+        r_lay.addWidget(self.ed_r2min, 3, 2)
+        r_lay.addWidget(make_label(u'λ stride (0=auto):', 'right'), 3, 3)
         self.ed_stride = make_int_edit(app.erf_stride, minv=0, maxv=1000)
-        r_lay.addWidget(self.ed_stride, 1, 4)
+        r_lay.addWidget(self.ed_stride, 3, 4)
         self.lbl_erf = QtWidgets.QLabel('')
         self.lbl_erf.setStyleSheet('color: #555;')
-        r_lay.addWidget(self.lbl_erf, 1, 5, 1, 5)
+        r_lay.addWidget(self.lbl_erf, 3, 5, 1, 5)
 
+        r_lay.addWidget(hline(), 4, 0, 1, 10)
         self.cb_show_ridge = QtWidgets.QCheckBox('Show t₀ overlay')
-        r_lay.addWidget(self.cb_show_ridge, 2, 0)
-        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 2, 1)
+        r_lay.addWidget(self.cb_show_ridge, 5, 0)
+        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 5, 1)
         self.ed_auto_n = make_int_edit(8, minv=4, maxv=100)
-        r_lay.addWidget(self.ed_auto_n, 2, 2)
+        r_lay.addWidget(self.ed_auto_n, 5, 2)
         self.btn_auto = QtWidgets.QPushButton('Auto-place')
-        r_lay.addWidget(self.btn_auto, 2, 3)
+        r_lay.addWidget(self.btn_auto, 5, 3)
         outer.addWidget(ridge_box)
         self._erf_cache = None       # (key, fit_erf_rows result)
         # erf refits take seconds: debounce window/stride edits.

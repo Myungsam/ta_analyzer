@@ -6,8 +6,8 @@ Verifies:
        20 fs and beats the argmax ridge on noisy data.
     2) Rows near a sign change (no signal) are rejected by R² min, and
        ``erf_t0_accept`` re-filters cached fits without refitting.
-    3) The dialog: option buttons in the left column, erf row directly
-       below the ridge row, helper switch updates app state, Auto-place in
+    3) The dialog: shared search window / λ-smooth row on top, option
+       buttons in the left column with the erf row below the ridge row, helper switch updates app state, Auto-place in
        erf mode places points on the true chirp, cache reuse on R² change.
 """
 import os
@@ -103,10 +103,13 @@ def test_dialog():
     def pos(w):
         r, c, _, _ = lay.getItemPosition(lay.indexOf(w))
         return r, c
-    assert pos(dlg.rb_ridge) == (0, 0)
-    assert pos(dlg.rb_erf) == (1, 0)
-    assert pos(dlg.dd_method)[0] == 0 and pos(dlg.ed_r2min)[0] == 1
-    assert pos(dlg.btn_auto)[0] == 2
+    # Shared window / λ-smooth on their own row above both method rows
+    for w in (dlg.ed_rtmin, dlg.ed_rtmax, dlg.ed_sm, dlg.btn_rec_ridge):
+        assert pos(w)[0] == 0, pos(w)
+    assert pos(dlg.rb_ridge) == (2, 0)
+    assert pos(dlg.rb_erf) == (3, 0)
+    assert pos(dlg.dd_method)[0] == 2 and pos(dlg.ed_r2min)[0] == 3
+    assert pos(dlg.btn_auto)[0] == 5
     assert dlg.rb_ridge.isChecked() and not dlg.ed_r2min.isEnabled()
 
     dlg.rb_erf.setChecked(True)

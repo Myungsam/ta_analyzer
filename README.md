@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.9.0** (최신) | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
+| **v1.9.1** (최신) | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper에서 두 방식 공통 설정(Search t, λ-smooth)을 별도 줄로 분리 |
+| v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
 | v1.7.0 | [`v1.7.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.7.0) | Global Analysis Export DADS/EADS가 스펙트럼과 kinetics/population을 각각 저장 |
 | v1.6.0 | [`v1.6.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.6.0) | Crop 창 Pinned delays/wavelengths 기억, Apply 시 Crop_information.csv 자동 저장 |
@@ -36,7 +37,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.9.0      # 최신 버전 (main과 같음)
+git checkout v1.9.1      # 최신 버전 (main과 같음)
+git checkout v1.9.0      # t₀ Helper 배치 정리 이전
 git checkout v1.8.0      # erf t₀ 도우미 이전
 git checkout v1.7.0      # opju 반출 이전
 git checkout v1.6.0      # DADS/EADS 시간 데이터 export 이전
@@ -256,6 +258,7 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 ### 5.10 Chirp t₀ 도우미: Ridge / erf fit (v1.9.0)
 
 Chirp Correction 창 아래의 **t₀ Helper**에서 *Auto-place*와 overlay가 쓸 기준 t₀(λ) 곡선을 만드는 방식을 왼쪽 버튼으로 고릅니다.
+맨 위 **Common (both methods)** 줄의 Search t·λ-smooth·Recompute는 두 방식에 함께 적용되고, 구분선 아래 줄에는 방식별 설정만 있습니다(v1.9.1).
 
 | 방식 | 계산 | 설정 |
 |---|---|---|
@@ -316,6 +319,9 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.9.1** (2026-11-19)
+- Chirp t₀ Helper: 두 방식이 공유하는 Search t·λ-smooth·Recompute를 맨 위 **Common (both methods)** 줄로 옮기고 구분선으로 Ridge / erf fit 설정과 분리
 
 **v1.9.0** (2026-11-19)
 - Chirp Correction 창 **t₀ Helper**: 왼쪽 버튼으로 **Ridge (argmax)** / **erf fit (IRF⊗exp)** 선택. erf fit은 파장마다 IRF⊗지수감쇠 + offset을 피팅해 t₀를 구함 (R² min으로 제외, λ stride, median 평활, FWHM 중앙값 표시)
