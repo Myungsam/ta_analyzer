@@ -9,6 +9,7 @@ Run from the command line with:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import traceback
@@ -184,6 +185,9 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.erf_r2_min = 0.9
         self.erf_stride = 0          # 0 = auto (~200 wavelengths)
         self.erf_artifact = 'off'    # 'off' | 'xpm' (G′+G″) | 'full' (G+G′+G″)
+        # Median IRF FWHM of the last erf helper run (None = no result);
+        # seeds the GA / KFit IRF FWHM via "From Chirp".
+        self.erf_fwhm_med: float | None = None
 
         # --- Current selection (crosshair position) ---
         self.selWL = 0.0
@@ -287,6 +291,12 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # of the Global Analysis dialog.
         self.ga_t_min: float | None = None
         self.ga_t_max: float | None = None
+        # Coherent-artifact terms of the GA fit ('off' | 'xpm' | 'full'),
+        # optional separate artifact FWHM.  Written by the dialog's Run.
+        self.ga_artifact = 'off'
+        self.ga_art_sep = False
+        self.ga_art_fwhm: float | None = None
+        self.ga_art_fwhm_fixed = True
 
         # --- Global analysis results ---
         self.ga_result_tau: np.ndarray | None = None
@@ -308,6 +318,26 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.ga_result_delay: np.ndarray | None = None
         self.ga_result_data: np.ndarray | None = None
         self.ga_result_t_window: tuple | None = None
+        # Artifact part of the GA result (None / 'off' when not fitted)
+        self.ga_result_B: np.ndarray | None = None
+        self.ga_result_artifact_fit: np.ndarray | None = None
+        self.ga_result_artifact = 'off'
+        self.ga_result_art_fwhm: float | None = None
+        self.ga_result_art_ignored: str | None = None
+        self.ga_result_pipeline_sig: bytes | None = None
+        self.ga_result_on_artsub = False
+
+        # --- Artifact subtraction stage of the main pipeline ---
+        # art_main: {'mode', 'B', 't0', 'fwhm_art', 'matrix', 'sig'} or
+        # None.  'sig' is the content hash of the pre-stage data (after
+        # BG → chirp → solvent) plus the delay / wavelength axes; the
+        # stage only subtracts while the current hash matches.
+        self.art_main: dict | None = None
+        self._art_pre_hash: bytes | None = None
+        self._art_stale = False
+        self._art_notice = ''
+        self._art_notice_age = 0
+        self._art_status_dirty = False
 
         # --- Time-axis unit ---
         self.time_unit = 'ps'   # 'ps' or 'us'
@@ -972,6 +1002,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.chirp_view_t_max = float(min(2.0, t[-1]))
         self.ridge_wl = None
         self.ridge_t = None
+        self.erf_fwhm_med = None
         self.tZeroShift = 0.0
         self.masked_regions = []
         self.specOverlays = []
@@ -992,7 +1023,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self._crop_wl_pre_resample = None
         # New data ⇒ any previous GA result refers to the OLD matrix
         # and would fail shape checks / mislead the user. Clear it.
-        self._clear_ga_state()
+        self._clear_ga_state('load')
         # New data → drop any stored spectrum/kinetics pan/zoom so the
         # first draw auto-fits to the new extent.
         self._reset_all_panel_zoom()
@@ -1037,14 +1068,28 @@ class TAAnalyzer(QtWidgets.QMainWindow):
 
     def _update_status_label(self):
         if self.wavelength is None:
+            self._art_status_dirty = False
             self.lbl_status.setText('No data loaded')
             return
         base = self.data_source_desc or 'Data'
         tag = '   [cropped]' if self.is_cropped() else ''
         if self.resample_enabled:
             tag += f'   [{self._resample_tag()}]'
+        art = self._art_status_text()
+        self._art_status_dirty = bool(art)
         self.lbl_status.setText(
-            f'{base}   ({len(self.wavelength)} λ x {len(self.delay)} t){tag}')
+            f'{base}   ({len(self.wavelength)} λ x {len(self.delay)} t)'
+            f'{tag}{art}')
+
+    def _art_status_text(self) -> str:
+        """Status-bar suffix of the artifact stage: the pending notice
+        and / or the active-stage tag ('' when neither applies)."""
+        txt = ''
+        if self._art_notice:
+            txt += f'   [{self._art_notice}]'
+        if self.art_main is not None:
+            txt += '   [artifact-sub]'
+        return txt
 
     # ================================================================
     # Correction pipeline (raw -> BG -> chirp -> masks)
@@ -1052,7 +1097,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
     def recompute(self):
         """Re-apply the whole correction chain from deltaA_raw → deltaA.
 
-        Order: BG → chirp → solvent-IRF subtraction → wavelength masks.
+        Order: BG → chirp → solvent-IRF subtraction → artifact
+        subtraction (when applied from GA) → wavelength masks.
 
         Solvent subtraction happens AFTER chirp so the alignment between
         sample and solvent is done in the chirp-corrected time axis.
@@ -1061,8 +1107,40 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         ``sample − scale·solvent`` are in the same frame and the IRF
         feature lands at t=0 for every λ.
         """
-        if self.deltaA_raw is None:
+        data = self._pre_stage_data()
+        if data is None:
             return
+        # Artifact subtraction (applied from Global Analysis).  The stage
+        # is content-addressed: it subtracts only while the pre-stage
+        # data and axes hash to the value recorded at Apply; otherwise it
+        # is flagged stale and update_all() clears it.
+        if self.art_main is not None:
+            self._art_pre_hash = self._hash_pre(data)
+            am = self.art_main
+            if (am['sig'] == self._art_pre_hash
+                    and am['matrix'].shape == data.shape):
+                data = data - am['matrix']
+                self._art_stale = False
+            else:
+                self._art_stale = True
+        else:
+            self._art_stale = False
+        # Apply wavelength masks
+        for wl1, wl2, mode in self.masked_regions:
+            m = (self.wavelength >= wl1) & (self.wavelength <= wl2)
+            if not m.any():
+                continue
+            if mode == 'nan':
+                data[m, :] = np.nan
+            else:
+                data[m, :] = 0.0
+        self.deltaA = data
+
+    def _pre_stage_data(self):
+        """deltaA_raw → BG → chirp → solvent (the data the artifact stage
+        acts on); None when no data is loaded."""
+        if self.deltaA_raw is None:
+            return None
         data = self.deltaA_raw.copy()
         if self.bg_applied and self.bg_spectrum is not None:
             data = data - self.bg_spectrum[:, None]
@@ -1081,16 +1159,25 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                 and self.sub_irf_aligned.shape == data.shape):
             data = ta_core.apply_solvent_subtraction(
                 data, self.sub_irf_aligned, self.sub_irf_scale)
-        # Apply wavelength masks
-        for wl1, wl2, mode in self.masked_regions:
-            m = (self.wavelength >= wl1) & (self.wavelength <= wl2)
-            if not m.any():
-                continue
-            if mode == 'nan':
-                data[m, :] = np.nan
-            else:
-                data[m, :] = 0.0
-        self.deltaA = data
+        return data
+
+    def _hash_pre(self, data) -> bytes:
+        """Content hash of the pre-stage data plus the delay / wavelength
+        axes (an axis-only t0 shift must invalidate the stage)."""
+        h = hashlib.blake2b(digest_size=16)
+        data = np.ascontiguousarray(data)
+        h.update(repr(data.shape).encode())
+        h.update(data.tobytes())
+        for ax in (self.delay, self.wavelength):
+            a = np.ascontiguousarray(ax, dtype=np.float64)
+            h.update(repr(a.shape).encode())
+            h.update(a.tobytes())
+        return h.digest()
+
+    def _compute_art_pre_hash(self):
+        """Hash of the current pre-stage data (None without data)."""
+        data = self._pre_stage_data()
+        return None if data is None else self._hash_pre(data)
 
     def realign_solvent(self):
         """Resample the stored pure-solvent ΔA onto the current (λ, t),
@@ -1202,11 +1289,26 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         # Keep the pure-solvent reference resampled onto the current
         # (λ, t) grid; recompute then just multiplies by the scale and
         # subtracts.  realign is a no-op if no solvent is loaded.
+        # A notice that already lived through one full update_all expires
+        if self._art_notice and self._art_notice_age >= 1:
+            self._art_notice = ''
         self.realign_solvent()
         self.recompute()
+        if self._art_stale:
+            # The data / grid under an applied artifact subtraction
+            # changed: drop the stage and show the clean data now.
+            self._clear_art_main('grid/preprocessing changed')
+            self.recompute()
         self._draw_map_2d()
         self._draw_spectrum()
         self._draw_kinetics()
+        # Only touch lbl_status while artifact text is (or was just)
+        # shown, so Off mode keeps any text other code put there.
+        if (self.art_main is not None or self._art_notice
+                or self._art_status_dirty):
+            self._update_status_label()
+        if self._art_notice:
+            self._art_notice_age += 1
 
     # ================================================================
     # Drawing: 2D map
@@ -1270,6 +1372,8 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         if self.resample_enabled:
             base += (', smoothed' if self.resample_mode == 'moving'
                      else ', resampled')
+        if self.art_main is not None:
+            base += ', artifact-sub'
         if scale_str:
             return rf'2D $\Delta$A  ({base}, {scale_str} scale)'
         return rf'2D $\Delta$A  ({base})'
@@ -1294,7 +1398,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             self.time_unit,
             tuple(self.masked_regions),  # mask changes data shape of NaN map
             self.bg_applied, self.chirp_applied, self.is_cropped(),
-            self.resample_enabled,
+            self.resample_enabled, self.art_main is not None,
         )
 
     def _draw_map_2d(self):
@@ -2654,17 +2758,23 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         finally:
             self._suppress_zoom_save = False
 
-    def _clear_ga_state(self):
+    def _clear_ga_state(self, reason: str = 'data changed'):
         """Drop any cached global-analysis fit results.
 
         Called whenever the underlying wavelength / delay arrays are
         replaced (load, crop), because the cached fit matrices no
         longer have shapes that match the current ``deltaA``.  Also
         forgets any user-set fit window — the new data has its own
-        meaningful range.
+        meaningful range — and clears an applied artifact subtraction
+        (``reason`` names the operation in the status-bar notice).
         """
         self.ga_t_min = None
         self.ga_t_max = None
+        self._clear_ga_results()
+        self._clear_art_main(reason)
+
+    def _clear_ga_results(self):
+        """Drop the GA fit result fields (the fit setup is kept)."""
         self.ga_result_tau = None
         self.ga_result_t0 = None
         self.ga_result_fwhm = None
@@ -2678,6 +2788,49 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.ga_result_delay = None
         self.ga_result_data = None
         self.ga_result_t_window = None
+        self.ga_result_B = None
+        self.ga_result_artifact_fit = None
+        self.ga_result_artifact = 'off'
+        self.ga_result_art_fwhm = None
+        self.ga_result_art_ignored = None
+        self.ga_result_pipeline_sig = None
+        self.ga_result_on_artsub = False
+
+    # ================================================================
+    # Artifact subtraction stage (applied from Global Analysis)
+    # ================================================================
+    def _clear_art_main(self, reason: str):
+        """Drop an active artifact-subtraction stage and post a one-shot
+        status-bar notice naming ``reason``.  No-op when inactive."""
+        self._art_stale = False
+        if self.art_main is None:
+            return
+        self.art_main = None
+        self._art_notice = (f'artifact subtraction cleared ({reason}) '
+                            '— re-run GA to re-apply')
+        self._art_notice_age = 0
+
+    def apply_artifact_main(self, B, t0, fwhm_art, mode):
+        """Subtract B · artifact_basis(delay; t0, fwhm_art, mode)ᵀ from the
+        main data (evaluated on the full delay axis) as a pipeline stage
+        after the solvent subtraction."""
+        B = np.asarray(B, dtype=float)
+        matrix = B @ ta_core.artifact_basis(
+            np.asarray(self.delay, float), float(t0), float(fwhm_art),
+            mode).T
+        self.art_main = {'mode': mode, 'B': B.copy(), 't0': float(t0),
+                         'fwhm_art': float(fwhm_art), 'matrix': matrix,
+                         'sig': self._compute_art_pre_hash()}
+        self._art_stale = False
+        self._art_notice = ''
+        self.update_all()
+
+    def revert_artifact_main(self):
+        """Remove the artifact-subtraction stage (no notice)."""
+        self.art_main = None
+        self._art_stale = False
+        self._art_notice = ''
+        self.update_all()
 
     # ================================================================
     # Overlays (pin / clear)
@@ -2922,9 +3075,11 @@ class TAAnalyzer(QtWidgets.QMainWindow):
                      'location.')
             return
         self.apply_zero_time_shift(delta)
+        art = self._art_status_text()
+        self._art_status_dirty = bool(art)
         self.lbl_status.setText(
             f't_0 shift applied: {delta:.4g} {self.t_unit_txt()}  '
-            f'(total: {self.tZeroShift:.4g} {self.t_unit_txt()})')
+            f'(total: {self.tZeroShift:.4g} {self.t_unit_txt()}){art}')
 
     def apply_crop_by_range(self, wl_min, wl_max, t_min, t_max,
                             resample: dict | None = None):
@@ -2983,7 +3138,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.masked_regions = []
         # Crop changed the wavelength / delay arrays, so the previous
         # GA result no longer matches the displayed matrix dimensions.
-        self._clear_ga_state()
+        self._clear_ga_state('crop/resample/revert')
         # Crop changes the data extent, so any saved spectrum/kinetics
         # pan/zoom is no longer meaningful — drop it and let the first
         # post-crop draw auto-fit to the new range.
@@ -3092,7 +3247,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
             warn_box(self, 'Interpolation failed', str(e))
             return
         # GA / LDA / Kfit results were fit to the previous raw matrix.
-        self._clear_ga_state()
+        self._clear_ga_state('interpolation')
         self.update_all()
 
     def interpolate_wavelengths_at(self, drop_idx, method: str = 'linear'):
@@ -3117,7 +3272,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         except Exception as e:
             warn_box(self, 'Interpolation failed', str(e))
             return
-        self._clear_ga_state()
+        self._clear_ga_state('interpolation')
         self.update_all()
 
     def interpolate_2d_at(self, drop_t_idx, drop_w_idx):
@@ -3149,7 +3304,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         except Exception as e:
             warn_box(self, 'Interpolation failed', str(e))
             return
-        self._clear_ga_state()
+        self._clear_ga_state('interpolation')
         self.update_all()
 
     # ================================================================

@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# NOTE: TA_Analyzer copy. Diverges from upstream TA_data_processing: an
+# optional 'DADS_artifact' sheet (+ TA_DADS-template graph, auto Y) is added
+# only when files["DADS_artifact"] is given; without it the output is unchanged.
 """
 Transient Absorption 새 opju 생성 프로그램 (Origin 2018 용)
 ==========================================================
@@ -77,6 +80,10 @@ GRAPHS = [
     ("TA_Kinetics",    "DADS_kinetics",        "scatter"),
     ("TA_Kinetics",    "EADS_populations",     "scatter"),
 ]
+# 있을 때만 만드는 시트의 그래프 (시트 이름 → (템플릿, 시트, 종류)).
+OPTIONAL_GRAPHS = {"DADS_artifact": ("TA_DADS", "DADS_artifact", "line")}
+# 템플릿의 고정 Y 범위 대신 데이터로 Y 를 정하는 시트 (artifact 진폭은 DADS 와 크기가 다르다).
+AUTO_Y_SHEETS = ("DADS_artifact",)
 PLOT_TYPE = {"line": 200, "scatter": 201, "contour": 226}
 
 # Kinetics 템플릿의 범례는 곡선 색에 맞춘 개별 글상자(1~4번 곡선 순서)이고,
@@ -323,8 +330,9 @@ def prep_time_series(path):
 
 
 def sheet_jobs(files, ctx):
-    """시트 이름 → (CSV 경로, 가공 함수). 경로가 None 이면 빈 시트."""
-    return [
+    """시트 이름 → (CSV 경로, 가공 함수). 경로가 None 이면 빈 시트.
+    DADS_artifact 는 경로가 있을 때만 시트를 만든다."""
+    jobs = [
         ("Original_Data",        files["cropped_original"], lambda p: prep_2d(p, True)),
         ("Data_Chirp_Corrected", files["chirp_cropped"],    lambda p: prep_2d(p, True)),
         ("Chirp_line",           files["chirp"],            prep_chirp),
@@ -338,6 +346,9 @@ def sheet_jobs(files, ctx):
         ("Global_Fit",           files["GA_fit"],           lambda p: prep_2d(p, False)),
         ("Residual",             files["GA_residual"],      lambda p: prep_2d(p, False)),
     ]
+    if files.get("DADS_artifact") is not None:
+        jobs.append(("DADS_artifact", files["DADS_artifact"], prep_wav_series))
+    return jobs
 
 
 def _same(a, b):
@@ -432,7 +443,7 @@ def _inside(v, lim):
     return (v >= lim[0]) & (v <= lim[1])
 
 
-def auto_axes(tmpl, arr, y1, y2, delays=None):
+def auto_axes(tmpl, arr, y1, y2, delays=None, sheet=None):
     """AXES[tmpl] 에 보이는 데이터로 다시 정한 컨투어 단계·Y 범위를 덮어쓴 사본.
     delays: 컨투어 값 열(y1..y2)의 지연시간 (없으면 Y 방향은 거르지 않음)."""
     a = dict(AXES[tmpl])
@@ -445,7 +456,7 @@ def auto_axes(tmpl, arr, y1, y2, delays=None):
     if "z" in a:
         m = max(int(np.ceil(np.abs(vals).max())), 1)
         a["z"] = (-m, m) + a["z"][2:]
-    elif tmpl in AUTO_Y:
+    elif tmpl in AUTO_Y or sheet in AUTO_Y_SHEETS:
         lo, hi = int(np.floor(vals.min())), int(np.ceil(vals.max()))
         if hi <= lo:
             hi = lo + 1
@@ -481,14 +492,14 @@ def make_graph(org, tmpl, sheet, kind, arr, legends=(), tdir=TEMPLATE_DIR):
         org.lt('plotxy iy:=%s(1,%d:%d) plot:=%d rescale:=0 ogl:=[<new template:="%s">];'
                % (rng, y1, y2, PLOT_TYPE[kind], t))
         note = "%d개 곡선" % (y2 - y1 + 1)
-    a = auto_axes(tmpl, arr, y1, y2, _delays(legends) if kind == "contour" else None)
+    a = auto_axes(tmpl, arr, y1, y2, _delays(legends) if kind == "contour" else None, sheet)
     restore_axes(org, a)
     set_titles(org, tmpl, sheet)
     if tmpl == "TA_Kinetics":
         fix_kinetics_text(org, legends)
     if "z" in a:
         note += ", 색상 ±%g" % a["z"][1]
-    elif tmpl in AUTO_Y:
+    elif tmpl in AUTO_Y or sheet in AUTO_Y_SHEETS:
         note += ", Y %g~%g" % a["y"][:2]
     return note
 
@@ -538,7 +549,10 @@ def build(folder, out_path=None, files=None, progress_cb=None,
                            "다시 실행하세요." % ", ".join(busy))
     tdir = prepare_templates()
     jobs = sheet_jobs(files, {"smooth_window": smooth_window, "smooth_poly": smooth_poly})
-    total = len(jobs) + len(GRAPHS) + 2
+    extra = [s for s, _, _ in jobs if s not in SHEETS]       # 있을 때만 만드는 시트
+    sheets = SHEETS + extra
+    graphs = GRAPHS + [OPTIONAL_GRAPHS[s] for s in extra if s in OPTIONAL_GRAPHS]
+    total = len(jobs) + len(graphs) + 2
 
     def step(i, msg):
         if progress_cb:
@@ -548,7 +562,7 @@ def build(folder, out_path=None, files=None, progress_cb=None,
     org = Origin2018()
     try:
         step(0, "새 프로젝트 만드는 중")
-        org.new_book(SHEETS)
+        org.new_book(sheets)
         for i, (sheet, path, prep) in enumerate(jobs, start=1):
             if path is None:
                 step(i, "%s ← (CSV 없음, 빈 시트)" % sheet)
@@ -566,7 +580,7 @@ def build(folder, out_path=None, files=None, progress_cb=None,
             comments[sheet] = [c for _, c, _, _ in sorted(labels) if c is not None]
             log.append("[OK] %-21s %s ← %s" % (sheet, note, os.path.basename(path)))
         base = len(jobs)
-        for k, (tmpl, sheet, kind) in enumerate(GRAPHS, start=1):
+        for k, (tmpl, sheet, kind) in enumerate(graphs, start=1):
             step(base + k, "그래프 %d (%s)" % (k, sheet))
             note = make_graph(org, tmpl, sheet, kind, data[sheet], comments.get(sheet, ()), tdir)
             log.append("[OK] Graph%d %-15s %s" % (k, sheet, note))

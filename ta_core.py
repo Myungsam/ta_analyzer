@@ -1187,6 +1187,39 @@ def artifact_basis(t: np.ndarray, t0: float, fwhm: float,
     return full[:, list(ARTIFACT_MODES[_artifact_mode(mode)])]
 
 
+def _artifact_columns(t, t0, fwhm, art_fwhm, mode) -> np.ndarray:
+    """Artifact columns of the GA / KFit models: :func:`artifact_basis`
+    with the separate artifact FWHM when given, else the shared IRF FWHM."""
+    return artifact_basis(t, t0, art_fwhm or fwhm, mode)
+
+
+def artifact_min_extra(artifact='off') -> int:
+    """Extra delay points a fit needs for the artifact columns (2 per
+    term, mirroring :func:`erf_min_points`)."""
+    return 2 * len(ARTIFACT_MODES[_artifact_mode(artifact)])
+
+
+def _artifact_support(mode, t, t0_init, fwhm_init, art_fwhm,
+                      skip_mask_active):
+    """Decide the number of artifact columns before the fit is packed.
+
+    Returns (n_art, ignored): ``ignored`` is 'skip-mask' when the
+    stretched + 'skip' IRF mask removes the t0 region, 'outside-window'
+    when fewer than n_req + 1 delays lie within t0_init ± 2σ_art (the
+    fit window misses the artifact: check the t0 initial value and the
+    fit window), else None."""
+    n_req = len(ARTIFACT_MODES[mode])
+    if n_req == 0:
+        return 0, None
+    if skip_mask_active:
+        return 0, 'skip-mask'
+    sig = (art_fwhm or fwhm_init) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    t = np.asarray(t, float)
+    if np.count_nonzero(np.abs(t - t0_init) <= 2.0 * sig) < n_req + 1:
+        return 0, 'outside-window'
+    return n_req, None
+
+
 def _fit_erf_trace(t: np.ndarray, y: np.ndarray, t_min: float,
                    t_max: float, artifact='off'):
     """Fit y ≈ A·(exp ⊗ Gaussian IRF)(t; t0, fwhm, tau) + c on one trace.
@@ -1543,7 +1576,10 @@ def format_fit_stats(stats) -> list:
 
 
 def population_ratio(A) -> np.ndarray:
-    """|Aᵢ| / Σⱼ|Aⱼ| × 100 along the last axis (NaN when all are zero)."""
+    """|Aᵢ| / Σⱼ|Aⱼ| × 100 along the last axis (NaN when all are zero).
+
+    Pass the exponential (+∞) amplitudes only; the fit routines' ``A``
+    already excludes the coherent-artifact amplitudes ``B``."""
     a = np.abs(np.asarray(A, float))
     tot = a.sum(axis=-1, keepdims=True)
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -1567,7 +1603,9 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                         beta_init=None, beta_fixed=None, stretch_on=None,
                         irf_mode: str = 'numerical',
                         backend=None, stop_check=None,
-                        method: str = 'trf', compute_stats: bool = True):
+                        method: str = 'trf', compute_stats: bool = True,
+                        artifact='off', art_fwhm=None,
+                        art_fwhm_fixed: bool = True):
     """VARPRO global fit.
 
     Nonlinear params (tau, beta, t0, FWHM) via Nelder-Mead; amplitudes A
@@ -1614,9 +1652,29 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
     ``beta_std``, ``t0_std``, ``fwhm_std``, ``A_std`` …).  ``None`` if the
     statistics could not be computed; the fit itself is unaffected.
 
+    ``artifact`` ('off' | 'xpm' | 'full', see ``ARTIFACT_MODES``) appends
+    coherent-artifact columns (:func:`artifact_basis`) centred at the
+    fitted t0 after the exp/∞ columns; their amplitudes ``B`` are solved
+    linearly with ``A``.  The width is the shared IRF FWHM, or
+    ``art_fwhm`` when given (a separate, log-parameterised width; free
+    unless ``art_fwhm_fixed``).  The artifact is ignored (B = 0,
+    ``info['artifact_ignored']`` = 'skip-mask' | 'outside-window') when
+    the stretched + 'skip' mask removes t0, or when fewer than n + 1
+    delays lie within t0_init ± 2σ_art (check the t0 initial value and
+    the fit window).
+
     Returns dict with keys:
-        tau, beta, t0, fwhm, A (M x k), fit (M x N), info, stretch_on
+        tau, beta, t0, fwhm, A (M x k, exp/∞ only), fit (M x N, incl.
+        the artifact), info, stretch_on, B (M x n_art; None when Off),
+        artifact_fit (M x N; None when Off), art_fwhm (width used; None
+        when Off).  ``info['stats']`` adds B_std and art_fwhm_std when
+        the artifact is requested.
     """
+    artifact = _artifact_mode(artifact)
+    if art_fwhm is not None:
+        art_fwhm = float(art_fwhm)
+        if not art_fwhm > 0:
+            raise ValueError('art_fwhm must be > 0')
     tau_init = np.asarray(tau_init, float).ravel()
     tau_fixed = np.asarray(tau_fixed, bool).ravel()
     t_arr = np.asarray(t, float).ravel()
@@ -1649,6 +1707,19 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
     idx_free_beta = np.where(stretch_on & ~beta_fixed)[0]
     n_free_beta = len(idx_free_beta)
 
+    # When 'skip' mode and any stretched component, drop points within
+    # ~3σ of t0 from the residual
+    skip_mask_active = any_stretched and irf_mode.lower() == 'skip'
+
+    # Artifact columns are decided before packing, so an ignored
+    # artifact adds no column and no x slot.
+    k_exp = n_nl + (1 if has_inf else 0)
+    n_art, art_ignored = _artifact_support(
+        artifact, t_arr, float(t0_init), float(fwhm_init), art_fwhm,
+        skip_mask_active)
+    art_free = n_art > 0 and art_fwhm is not None and not art_fwhm_fixed
+    art_fw_cur = art_fwhm
+
     # Pack free params (log transform for positivity)
     x0_list = []
     if n_free_tau > 0:
@@ -1659,17 +1730,20 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
         x0_list.append(float(t0_init))
     if not fwhm_fixed:
         x0_list.append(float(np.log(fwhm_init)))
+    if art_free:
+        x0_list.append(float(np.log(art_fwhm)))
     x0 = np.array(x0_list, float)
 
-    # When 'skip' mode and any stretched component, drop points within
-    # ~3σ of t0 from the residual
-    skip_mask_active = any_stretched and irf_mode.lower() == 'skip'
-
-    def build_basis_local(tau_v, beta_v, t0_v, fwhm_v):
-        """Build (N, n_cols) basis with mixed exp / stretched columns."""
-        return build_ga_basis(t_arr, tau_v, t0_v, fwhm_v, has_inf, beta_v,
+    def build_basis_local(tau_v, beta_v, t0_v, fwhm_v, afw_v=None):
+        """Build (N, n_cols) basis with mixed exp / stretched columns,
+        followed by the artifact columns when active."""
+        Cexp = build_ga_basis(t_arr, tau_v, t0_v, fwhm_v, has_inf, beta_v,
                               stretch_on if any_stretched else None,
                               irf_mode)
+        if n_art == 0:
+            return Cexp
+        return np.hstack([Cexp, _artifact_columns(t_arr, t0_v, fwhm_v,
+                                                  afw_v, artifact)])
 
     # Route the two hot linear-algebra kernels (lstsq + reconstruction
     # matmul) through the user-selected backend when one is supplied.
@@ -1683,7 +1757,7 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
         _matmul = lambda a, b: a @ b  # noqa: E731
 
     def objective(x):
-        nonlocal tau_cur, beta_cur, t0_cur, fwhm_cur
+        nonlocal tau_cur, beta_cur, t0_cur, fwhm_cur, art_fw_cur
         # User-requested cancellation: check before doing any work so
         # Stop responds quickly even on a very tight IRF grid.
         if stop_check is not None and stop_check():
@@ -1697,19 +1771,25 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
             t0_cur = float(x[idx]); idx += 1
         if not fwhm_fixed:
             fwhm_cur = float(np.exp(x[idx])); idx += 1
+        if art_free:
+            art_fw_cur = float(np.exp(x[idx])); idx += 1
 
         sigma_cur = fwhm_cur / (2.0 * np.sqrt(2.0 * np.log(2.0)))
         t_span = t_arr.max() - t_arr.min()
         if (np.any(tau_cur < sigma_cur / 4.0) or
                 np.any(tau_cur > 100.0 * t_span) or
                 fwhm_cur <= 0 or fwhm_cur > t_span or
+                (n_art > 0 and art_fw_cur is not None
+                 and (art_fw_cur <= 0 or art_fw_cur > t_span)) or
                 (any_stretched and (np.any(beta_cur[stretch_on] <= 0)
                                     or np.any(beta_cur[stretch_on] > 2)))):
-            k_cols = n_nl + (1 if has_inf else 0)
-            return 1e30, np.zeros((M, k_cols)), np.zeros((M, N))
+            return 1e30, np.zeros((M, k_exp + n_art)), np.zeros((M, N))
 
-        C = build_basis_local(tau_cur, beta_cur, t0_cur, fwhm_cur)
-        col_norms = np.sqrt(np.nansum(C ** 2, axis=0))
+        C = build_basis_local(tau_cur, beta_cur, t0_cur, fwhm_cur,
+                              art_fw_cur)
+        # Norm check on the exp/∞ columns only: artifact columns may be
+        # small inside a window that only catches the artifact's edge.
+        col_norms = np.sqrt(np.nansum(C[:, :k_exp] ** 2, axis=0))
         if np.any(col_norms < 1e-12) or not np.all(np.isfinite(C)):
             return 1e30, np.zeros((M, C.shape[1])), np.zeros((M, N))
 
@@ -1842,13 +1922,13 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
     stats = None
     if compute_stats and loss < 1e29:
         tau_opt, beta_opt = tau_cur.copy(), beta_cur.copy()
-        t0_opt, fwhm_opt = t0_cur, fwhm_cur
+        t0_opt, fwhm_opt, afw_opt = t0_cur, fwhm_cur, art_fw_cur
 
         def basis_at(x):
             if stop_check is not None and stop_check():
                 raise GlobalAnalysisStopped()
             tau_v, beta_v = tau_opt.copy(), beta_opt.copy()
-            t0_v, fwhm_v = t0_opt, fwhm_opt
+            t0_v, fwhm_v, afw_v = t0_opt, fwhm_opt, afw_opt
             i = 0
             for j in idx_free_tau:
                 tau_v[j] = np.exp(x[i]); i += 1
@@ -1857,8 +1937,10 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
             if not t0_fixed:
                 t0_v = float(x[i]); i += 1
             if not fwhm_fixed:
-                fwhm_v = float(np.exp(x[i]))
-            return build_basis_local(tau_v, beta_v, t0_v, fwhm_v)
+                fwhm_v = float(np.exp(x[i])); i += 1
+            if art_free:
+                afw_v = float(np.exp(x[i]))
+            return build_basis_local(tau_v, beta_v, t0_v, fwhm_v, afw_v)
 
         cell_mask = np.ones((M, N), dtype=bool)
         if skip_mask_active:
@@ -1868,13 +1950,35 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
                 cell_mask[:, ~cm] = False
         try:
             stats = varpro_stats(D, A_out, basis_at, x_opt, cell_mask)
+            p_nl = x_opt.size - (1 if art_free else 0)
             stats.update(nl_param_std(
-                x_opt, stats['x_std'], n_nl, idx_free_tau, idx_free_beta,
-                not t0_fixed, not fwhm_fixed))
+                x_opt[:p_nl], stats['x_std'][:p_nl], n_nl, idx_free_tau,
+                idx_free_beta, not t0_fixed, not fwhm_fixed))
+            if artifact != 'off':
+                full_std = stats['A_std']
+                stats['A_std'] = full_std[:, :k_exp]
+                stats['B_std'] = (
+                    full_std[:, k_exp:] if n_art else
+                    np.full((M, len(ARTIFACT_MODES[artifact])), np.nan))
+                stats['art_fwhm_std'] = (
+                    float(np.exp(x_opt[-1]) * stats['x_std'][-1])
+                    if art_free else np.nan)
         except GlobalAnalysisStopped:
             raise
         except Exception:
             stats = None
+
+    B_out = art_fit = art_fw_used = None
+    if artifact != 'off':
+        art_fw_used = art_fw_cur if art_fw_cur is not None else fwhm_cur
+        if n_art:
+            B_out = A_out[:, k_exp:]
+            art_fit = B_out @ _artifact_columns(
+                t_arr, t0_cur, fwhm_cur, art_fw_cur, artifact).T
+        else:
+            B_out = np.zeros((M, len(ARTIFACT_MODES[artifact])))
+            art_fit = np.zeros((M, N))
+        A_out = A_out[:, :k_exp]
 
     info = {
         'rss': loss,
@@ -1886,6 +1990,8 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
         'initialRMS': float(np.sqrt(init_loss / D.size)),
         'irf_mode': irf_mode if any_stretched else 'closed-form',
         'stats': stats,
+        'artifact': artifact,
+        'artifact_ignored': art_ignored,
     }
     return {
         'tau': tau_cur.copy(),
@@ -1896,6 +2002,9 @@ def fit_global_analysis(D: np.ndarray, t: np.ndarray,
         'A': A_out,
         'fit': fit_out,
         'info': info,
+        'B': B_out,
+        'artifact_fit': art_fit,
+        'art_fwhm': art_fw_used,
     }
 
 
@@ -1904,6 +2013,8 @@ def compute_eads_from_dads(DADS: np.ndarray, tau_vec, has_inf: bool):
 
     Sequential model: species 1 -> 2 -> ... -> N (+ optional terminal
     species when has_inf=True).  Species are ordered by ascending tau.
+    ``DADS`` holds the exponential (+∞) columns only; the coherent-artifact
+    amplitudes ``B`` of :func:`fit_global_analysis` are not species.
 
     Returns (EADS (M, n), tau_sorted, Bmat).
     """
@@ -2034,7 +2145,9 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
                      t0_init: float = 0.0, t0_fixed: bool = True,
                      fwhm_init: float = 0.15, fwhm_fixed: bool = True,
                      has_inf: bool = False,
-                     irf_mode: str = 'skip'):
+                     irf_mode: str = 'skip',
+                     artifact='off', art_fwhm=None,
+                     art_fwhm_fixed: bool = True):
     """Fit a single kinetic trace y(t) with sum of (possibly stretched)
     exponentials convolved with a Gaussian IRF.
 
@@ -2042,8 +2155,19 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
     Non-linear parameters (tau, beta, t0, FWHM) are optimized over a
     log-transformed parameterization via Nelder-Mead.
 
-    Returns dict with keys: tau, beta, t0, fwhm, A, fit, residual, info.
+    ``artifact`` / ``art_fwhm`` / ``art_fwhm_fixed``: coherent-artifact
+    columns appended after the exp/∞ columns, exactly as in
+    :func:`fit_global_analysis` (same ignore rules and info keys).
+
+    Returns dict with keys: tau, beta, t0, fwhm, A (exp/∞ only), fit
+    (incl. the artifact), residual, info, B (n_art,; None when Off),
+    artifact_fit (N,; None when Off), art_fwhm (None when Off).
     """
+    artifact = _artifact_mode(artifact)
+    if art_fwhm is not None:
+        art_fwhm = float(art_fwhm)
+        if not art_fwhm > 0:
+            raise ValueError('art_fwhm must be > 0')
     t = np.asarray(t, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
     if t.shape != y.shape:
@@ -2064,11 +2188,18 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
 
     # Mask of valid points (and IRF region if 'skip' + stretched)
     mask = np.isfinite(y)
-    if irf_mode.lower() == 'skip' and stretch_on.any():
+    skip_mask_active = irf_mode.lower() == 'skip' and stretch_on.any()
+    if skip_mask_active:
         sig = fwhm_init / (2.0 * np.sqrt(2.0 * np.log(2.0)))
         mask = mask & (t > t0_init + 3.0 * sig)
 
-    n_min = n_nl + (1 if has_inf else 0) + 1
+    # Artifact columns are decided before packing (see fit_global_analysis)
+    n_art, art_ignored = _artifact_support(
+        artifact, t[mask], float(t0_init), float(fwhm_init), art_fwhm,
+        skip_mask_active)
+    art_free = n_art > 0 and art_fwhm is not None and not art_fwhm_fixed
+
+    n_min = n_nl + (1 if has_inf else 0) + 1 + 2 * n_art
     if int(mask.sum()) < n_min:
         raise ValueError(
             f'Not enough data points for the fit '
@@ -2087,6 +2218,8 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
         x0.append(float(t0_init))
     if not fwhm_fixed:
         x0.append(float(np.log(max(fwhm_init, 1e-12))))
+    if art_free:
+        x0.append(float(np.log(art_fwhm)))
     x0 = np.asarray(x0, dtype=float)
 
     cur = {
@@ -2094,6 +2227,7 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
         'beta': beta_init.copy(),
         't0': float(t0_init),
         'fwhm': float(fwhm_init),
+        'art_fwhm': art_fwhm,
     }
     t_span = float(t.max() - t.min()) if t.size else 1.0
     n_cols = n_nl + (1 if has_inf else 0)
@@ -2110,14 +2244,20 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
             cur['t0'] = float(x[i]); i += 1
         if not fwhm_fixed:
             cur['fwhm'] = float(np.exp(x[i])); i += 1
+        if art_free:
+            cur['art_fwhm'] = float(np.exp(x[i])); i += 1
+        afw = cur['art_fwhm']
 
         # Reject pathological regions cheaply
         if (not np.all(np.isfinite(cur['tau'])) or np.any(cur['tau'] <= 0)
                 or not np.all(np.isfinite(cur['beta']))
                 or np.any(cur['beta'] <= 0) or np.any(cur['beta'] > 2)
                 or not np.isfinite(cur['fwhm']) or cur['fwhm'] <= 0
-                or cur['fwhm'] > t_span):
-            return (np.zeros(n_cols), np.zeros_like(t))
+                or cur['fwhm'] > t_span
+                or (n_art > 0 and afw is not None
+                    and (not np.isfinite(afw) or afw <= 0
+                         or afw > t_span))):
+            return (np.zeros(n_cols + n_art), np.zeros_like(t))
 
         # Build basis
         M = np.zeros((t.size, n_cols))
@@ -2131,6 +2271,9 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
                     t, cur['tau'][j], cur['t0'], cur['fwhm'])
         if has_inf:
             M[:, -1] = exp_irf_conv(t, np.inf, cur['t0'], cur['fwhm'])
+        if n_art:
+            M = np.hstack([M, _artifact_columns(t, cur['t0'], cur['fwhm'],
+                                                afw, artifact)])
 
         # Solve amplitudes on the masked points
         Mm = M[mask, :]
@@ -2138,9 +2281,9 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
         try:
             A = _lsqminnorm(Mm, ym)
         except Exception:
-            A = np.zeros(n_cols)
+            A = np.zeros(M.shape[1])
         if not np.all(np.isfinite(A)):
-            A = np.zeros(n_cols)
+            A = np.zeros(M.shape[1])
         return A, M @ A
 
     def loss(x):
@@ -2178,14 +2321,28 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
                         exp_irf_conv(t, cur['tau'][j], cur['t0'], cur['fwhm']))
         if has_inf:
             M_[:, -1] = exp_irf_conv(t, np.inf, cur['t0'], cur['fwhm'])
+        if n_art:
+            M_ = np.hstack([M_, _artifact_columns(
+                t, cur['t0'], cur['fwhm'], cur['art_fwhm'], artifact)])
         return M_
 
     try:
         stats = varpro_stats(y[None, :], A_final[None, :], basis_at, x_opt,
                              mask[None, :])
+        p_nl = x_opt.size - (1 if art_free else 0)
         stats.update(nl_param_std(
-            x_opt, stats['x_std'], n_nl, free_tau_idx, free_beta_idx,
-            not t0_fixed, not fwhm_fixed))
+            x_opt[:p_nl], stats['x_std'][:p_nl], n_nl, free_tau_idx,
+            free_beta_idx, not t0_fixed, not fwhm_fixed))
+        if artifact != 'off':
+            # (1, ·) like A_std: the leading axis is the trace
+            full_std = stats['A_std']
+            stats['A_std'] = full_std[:, :n_cols]
+            stats['B_std'] = (
+                full_std[:, n_cols:] if n_art else
+                np.full((1, len(ARTIFACT_MODES[artifact])), np.nan))
+            stats['art_fwhm_std'] = (
+                float(np.exp(x_opt[-1]) * stats['x_std'][-1])
+                if art_free else np.nan)
     except Exception:
         stats = None
     cur.update(opt)
@@ -2193,6 +2350,19 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
     res_v = y - fit_v
     res_v[~mask] = np.nan
     rms = float(np.sqrt(np.nanmean(res_v[mask] ** 2))) if mask.any() else 0.0
+
+    B_out = art_fit = art_fw_used = None
+    if artifact != 'off':
+        afw = cur['art_fwhm']
+        art_fw_used = afw if afw is not None else cur['fwhm']
+        if n_art:
+            B_out = A_final[n_cols:]
+            art_fit = _artifact_columns(t, cur['t0'], cur['fwhm'], afw,
+                                        artifact) @ B_out
+        else:
+            B_out = np.zeros(len(ARTIFACT_MODES[artifact]))
+            art_fit = np.zeros_like(t)
+        A_final = A_final[:n_cols]
 
     return {
         'tau': cur['tau'].copy(),
@@ -2203,7 +2373,11 @@ def fit_single_trace(t: np.ndarray, y: np.ndarray, *,
         'fit': fit_v,
         'residual': res_v,
         'info': {'iters': iters, 'fval': fval, 'rms': rms,
-                 'mask': mask, 'irf_mode': irf_mode, 'stats': stats},
+                 'mask': mask, 'irf_mode': irf_mode, 'stats': stats,
+                 'artifact': artifact, 'artifact_ignored': art_ignored},
+        'B': B_out,
+        'artifact_fit': art_fit,
+        'art_fwhm': art_fw_used,
     }
 
 

@@ -610,12 +610,15 @@ class ChirpDialog(QtWidgets.QDialog):
             else:
                 wl_r, t_r = res['wl'], res['t0']
             if res is None:
+                app.erf_fwhm_med = None
                 self.lbl_erf.setText(
                     f'window holds < {ta_core.ERF_MIN_POINTS} delays')
             else:
                 n_ok, n = int(res['ok'].sum()), res['ok'].size
                 fw = (np.nanmedian(res['fwhm_all'][res['ok']])
                       if n_ok else float('nan'))
+                # Seeds the GA / KFit IRF FWHM via "From Chirp"
+                app.erf_fwhm_med = float(fw) if n_ok else None
                 self.lbl_erf.setText(
                     f'{n_ok}/{n} λ accepted ({self._artifact_text()}), '
                     f'median FWHM = {fw:.3g} '

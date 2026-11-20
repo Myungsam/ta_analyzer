@@ -22,6 +22,58 @@ import ta_device
 import ta_residual_store
 
 
+# Coherent-artifact choices shared by the GA and Kinetic Fit dialogs:
+# (combo label, ta_core.ARTIFACT_MODES key).
+ARTIFACT_CHOICES = [
+    ('Off', 'off'),
+    (u'G′+G″ (sample)', 'xpm'),
+    (u'G+G′+G″ (solvent)', 'full'),
+]
+ARTIFACT_NAMES = {key: lbl for lbl, key in ARTIFACT_CHOICES}
+# Basis column index (ta_core.artifact_basis) → display label.
+ARTIFACT_LABELS = {0: 'G', 1: u'G′', 2: u'G″'}
+ARTIFACT_TOOLTIP = (
+    u'Coherent-artifact terms fitted jointly with the exponentials:\n'
+    u'Gaussian G and its derivatives σG′, σ²G″ at the fitted t₀,\n'
+    u'with the IRF FWHM (or a separate artifact FWHM).\n\n'
+    u'"G′+G″ (sample)": cross-phase modulation of a sample.\n'
+    u'"G+G′+G″ (solvent)": also G — G trades against a small t₀ shift\n'
+    u'of the rising step (bias), so use it for solvent-like data.\n\n'
+    u'Stretched rows with the "skip" IRF mode mask the t₀ region, so\n'
+    u'the artifact is ignored there — use "numerical".\n'
+    u'A single global t₀ is fitted: apply the chirp correction first.')
+ARTIFACT_SKIP_WARN = (u'artifact ignored with stretched + skip; '
+                      u'use "numerical"')
+FROM_CHIRP_TOOLTIP = (
+    'Seed the IRF FWHM with the median FWHM of the last erf '
+    't₀-helper run in the Chirp dialog, and the Artifact mode '
+    'with the helper\'s artifact option (when not Off).')
+ART_SEP_TOOLTIP = ('Fit the artifact with its own FWHM instead of the IRF '
+                   'FWHM. Fix it when the artifact is weak.')
+
+
+def seed_artifact_from_chirp(app, combo, fwhm_edit, parent):
+    """"From Chirp": seed the IRF FWHM initial value from the median FWHM
+    of the last erf-helper run (``app.erf_fwhm_med``) and the Artifact
+    combo from the chirp helper's artifact mode (when it is not 'off').
+
+    The separate-artifact-FWHM controls are left untouched.  Without an
+    erf result a notice is shown and nothing changes.  Returns True when
+    the controls were seeded."""
+    fw = getattr(app, 'erf_fwhm_med', None)
+    if fw is None:
+        info_box(parent, 'From Chirp',
+                 u'No erf result — run the erf helper in Chirp first.')
+        return False
+    fwhm_edit.setValue(float(fw))
+    mode = ta_core._artifact_mode(getattr(app, 'erf_artifact', 'off'))
+    if mode != 'off':
+        i = combo.findData(mode)
+        if i >= 0:
+            combo.setCurrentIndex(i)
+    return True
+
+
 class GlobalAnalysisDialog(QtWidgets.QDialog):
     """Global-analysis fit / DADS / EADS / kinetics visualizer."""
 
@@ -167,6 +219,45 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         row_fw.addStretch(1)
         lL.addLayout(row_fw)
 
+        # Coherent artifact (G / G′ / G″ at t₀), fitted jointly
+        row_art = QtWidgets.QHBoxLayout()
+        row_art.addWidget(make_label('Artifact:'))
+        self.dd_artifact = QtWidgets.QComboBox()
+        for lbl, key in ARTIFACT_CHOICES:
+            self.dd_artifact.addItem(lbl, key)
+        self.dd_artifact.setCurrentIndex(max(0, self.dd_artifact.findData(
+            getattr(app, 'ga_artifact', 'off'))))
+        self.dd_artifact.setToolTip(ARTIFACT_TOOLTIP)
+        row_art.addWidget(self.dd_artifact)
+        self.btn_from_chirp = QtWidgets.QPushButton('From Chirp')
+        self.btn_from_chirp.setToolTip(FROM_CHIRP_TOOLTIP)
+        row_art.addWidget(self.btn_from_chirp)
+        row_art.addStretch(1)
+        lL.addLayout(row_art)
+
+        row_art_fw = QtWidgets.QHBoxLayout()
+        self.cb_art_sep = QtWidgets.QCheckBox('Separate artifact FWHM')
+        self.cb_art_sep.setChecked(bool(getattr(app, 'ga_art_sep', False)))
+        self.cb_art_sep.setToolTip(ART_SEP_TOOLTIP)
+        row_art_fw.addWidget(self.cb_art_sep)
+        art_fw0 = getattr(app, 'ga_art_fwhm', None)
+        self.ed_art_fw = make_double_edit(
+            art_fw0 if art_fw0 else app.ga_fwhm, minv=1e-6)
+        row_art_fw.addWidget(self.ed_art_fw)
+        self.cb_art_fw_fix = QtWidgets.QCheckBox('Fixed')
+        self.cb_art_fw_fix.setChecked(
+            bool(getattr(app, 'ga_art_fwhm_fixed', True)))
+        row_art_fw.addWidget(self.cb_art_fw_fix)
+        row_art_fw.addStretch(1)
+        lL.addLayout(row_art_fw)
+
+        # Inline warning: stretched rows + 'skip' mask the artifact out
+        self.lbl_art_warn = QtWidgets.QLabel('')
+        self.lbl_art_warn.setWordWrap(True)
+        self.lbl_art_warn.setStyleSheet('color: #b35a00;')
+        self.lbl_art_warn.setVisible(False)
+        lL.addWidget(self.lbl_art_warn)
+
         # ---- Fit time-range -------------------------------------------
         # Restrict the fit to a user-chosen [t_min, t_max] window.
         # Useful when the late-time tail is dominated by another process
@@ -251,6 +342,37 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             exp_row.addWidget(b)
         lL.addLayout(exp_row)
 
+        # Artifact-subtracted data: export / Residual store / main data
+        art_row = QtWidgets.QHBoxLayout()
+        self.btn_exp_artsub = QtWidgets.QPushButton('Art.-sub')
+        self.btn_exp_artsub.setToolTip(
+            'Export the fit-window data minus the fitted artifact (2D) '
+            'and the artifact itself (…_artifact companion file).')
+        self.btn_artsub_resid = QtWidgets.QPushButton(
+            u'Art.-sub → Residual store')
+        self.btn_artsub_resid.setToolTip(
+            'Save data − artifact (fit window) to the residuals folder '
+            'for the Coherence dialog.')
+        art_row.addWidget(make_label('Artifact:', 'right'))
+        art_row.addWidget(self.btn_exp_artsub)
+        art_row.addWidget(self.btn_artsub_resid)
+        art_row.addStretch(1)
+        lL.addLayout(art_row)
+
+        art_row2 = QtWidgets.QHBoxLayout()
+        self.btn_apply_art = QtWidgets.QPushButton('Apply to main data')
+        self.btn_apply_art.setToolTip(
+            'Subtract the fitted artifact from the main data (on the '
+            'full delay axis) as a pipeline stage.  It is cleared '
+            'automatically when the data or its preprocessing changes.')
+        self.btn_revert_art = QtWidgets.QPushButton('Revert artifact')
+        self.btn_revert_art.setToolTip(
+            'Remove the artifact subtraction from the main data.')
+        art_row2.addWidget(self.btn_apply_art)
+        art_row2.addWidget(self.btn_revert_art)
+        art_row2.addStretch(1)
+        lL.addLayout(art_row2)
+
         self.lbl_status = QtWidgets.QLabel('Ready.')
         lL.addWidget(self.lbl_status)
         self.txt_result = QtWidgets.QTextEdit()
@@ -302,6 +424,11 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.dd_kin_scale = QtWidgets.QComboBox()
         self.dd_kin_scale.addItems(['Log', 'Linear'])
         kin_ctrl.addWidget(self.dd_kin_scale)
+        self.cb_show_artsub = QtWidgets.QCheckBox('Show artifact-subtracted')
+        self.cb_show_artsub.setToolTip(
+            'Maps and kinetics show data − artifact and fit − artifact '
+            '(the residual is unchanged; the main data is not touched).')
+        kin_ctrl.addWidget(self.cb_show_artsub)
         kin_ctrl.addStretch(1)
         rL.addLayout(kin_ctrl)
 
@@ -519,12 +646,27 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.ed_t_min.valueChanged.connect(self._update_t_count_label)
         self.ed_t_max.valueChanged.connect(self._update_t_count_label)
         self.btn_t_full.clicked.connect(self._set_t_range_full)
+        # Artifact controls
+        self.dd_artifact.currentIndexChanged.connect(
+            self._update_art_controls)
+        self.cb_art_sep.toggled.connect(self._update_art_controls)
+        self.dd_irf_mode.currentTextChanged.connect(self._update_art_warn)
+        self.btn_from_chirp.clicked.connect(
+            lambda: seed_artifact_from_chirp(self.app, self.dd_artifact,
+                                             self.ed_fw, self))
+        self.btn_exp_artsub.clicked.connect(self.export_artifact_subtracted)
+        self.btn_artsub_resid.clicked.connect(self.save_artsub_residual)
+        self.cb_show_artsub.toggled.connect(self._on_show_artsub)
+        self.btn_apply_art.clicked.connect(self.apply_artifact_to_main)
+        self.btn_revert_art.clicked.connect(self.revert_artifact_main)
 
         self._cid_map = self.canvas_maps.mpl_connect(
             'button_press_event', self.on_map_click)
 
         self.fill_table()
         self._update_t_count_label()
+        self._update_art_controls()
+        self._update_art_buttons()
 
         # Defer device enumeration until after the dialog has appeared,
         # so the (potentially multi-second) TensorFlow import doesn't
@@ -1072,6 +1214,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             app.ga_stretch_on[row] = (item.checkState() == QtCore.Qt.Checked)
             # Re-grey the β cells right away
             self._refresh_beta_row_states()
+            self._update_art_warn()
         elif col == 3:                    # β init
             try:
                 v = float(self.tau_table.item(row, col).text())
@@ -1121,6 +1264,137 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
     def on_ncomp_change(self, val):
         self.app.ga_n_comp = int(val)
         self.fill_table()
+        self._update_art_warn()
+
+    # ---------- Artifact controls ----------
+    def _update_art_controls(self, *_):
+        """Separate-FWHM edit / Fixed follow the checkbox; refresh the
+        inline stretched + skip warning."""
+        sep = self.cb_art_sep.isChecked()
+        self.ed_art_fw.setEnabled(sep)
+        self.cb_art_fw_fix.setEnabled(sep)
+        self._update_art_warn()
+
+    def _update_art_warn(self, *_):
+        """Show the inline warning when the artifact is On while a
+        stretched row uses the 'skip' IRF mode (the engine ignores the
+        artifact then)."""
+        stretched = False
+        for r in range(self.tau_table.rowCount()):
+            it = self.tau_table.item(r, 2)
+            if it is not None and it.checkState() == QtCore.Qt.Checked:
+                stretched = True
+        on = (self.dd_artifact.currentData() != 'off' and stretched
+              and self.dd_irf_mode.currentText() == 'skip')
+        self.lbl_art_warn.setText(ARTIFACT_SKIP_WARN if on else '')
+        self.lbl_art_warn.setVisible(on)
+
+    def _has_art_result(self):
+        app = self.app
+        return (app.ga_result_fit is not None
+                and app.ga_result_B is not None
+                and app.ga_result_artifact_fit is not None)
+
+    def _update_art_buttons(self):
+        """Enable the artifact actions that the current result allows."""
+        has = self._has_art_result()
+        for w in (self.btn_exp_artsub, self.btn_artsub_resid,
+                  self.cb_show_artsub, self.btn_apply_art):
+            w.setEnabled(has)
+        if not has and self.cb_show_artsub.isChecked():
+            self.cb_show_artsub.blockSignals(True)
+            self.cb_show_artsub.setChecked(False)
+            self.cb_show_artsub.blockSignals(False)
+        self.btn_revert_art.setEnabled(
+            getattr(self.app, 'art_main', None) is not None)
+
+    def _set_export_enabled(self, on: bool):
+        for b in (self.btn_exp_dads, self.btn_exp_eads, self.btn_exp_fit,
+                  self.btn_exp_res, self.btn_exp_kin, self.btn_save_resid):
+            b.setEnabled(on)
+
+    def _artsub(self):
+        """Artifact matrix to subtract in the plots (None unless "Show
+        artifact-subtracted" is ticked and an artifact was fitted)."""
+        if self.cb_show_artsub.isChecked() and self._has_art_result():
+            return self.app.ga_result_artifact_fit
+        return None
+
+    def _on_show_artsub(self, *_):
+        self.plot_maps()
+        self.plot_kinetics()
+
+    def _art_labels(self):
+        """Labels of the B columns (G / G′ / G″ per the fitted mode)."""
+        return [ARTIFACT_LABELS[c] for c in
+                ta_core.ARTIFACT_MODES[self.app.ga_result_artifact]]
+
+    def _reset_results(self, status):
+        """Drop the dialog's fit result (maps / DADS / EADS / kinetics
+        cleared, exports disabled), keeping the fit setup."""
+        self.app._clear_ga_results()
+        self.rebuild_comp_checkboxes()
+        for ax in (self.ax_exp, self.ax_fit_map, self.ax_res, self.ax_dads,
+                   self.ax_dads_n, self.ax_dads_t, self.ax_eads,
+                   self.ax_eads_n, self.ax_eads_t, self.ax_kin_fit):
+            ax.clear()
+        for cv in (self.canvas_maps, self.canvas_dads, self.canvas_eads,
+                   self.canvas_kin_fit):
+            cv.draw_idle()
+        self._map_vlines = [None, None, None]
+        self._set_export_enabled(False)
+        self.txt_result.setPlainText(
+            'Results will appear here after fitting.')
+        self.lbl_status.setText(status)
+        self._update_art_buttons()
+
+    def apply_artifact_to_main(self):
+        """Subtract the fitted artifact from the main data (pipeline
+        stage evaluated on the full delay axis), then reset this
+        dialog's result: the fit no longer matches the main data."""
+        app = self.app
+        why = None
+        if not self._has_art_result():
+            why = 'Run a fit with the Artifact option on first.'
+        elif app.ga_result_art_ignored:
+            why = ('The artifact was ignored in this fit — nothing to '
+                   'apply.')
+        elif app.art_main is not None:
+            why = 'Revert artifact first.'
+        elif app.ga_result_on_artsub:
+            why = ('This fit was run on artifact-subtracted data — '
+                   're-run GA.')
+        elif app.ga_result_pipeline_sig != app._compute_art_pre_hash():
+            why = u'Data changed since the fit — re-run GA.'
+        if why is not None:
+            info_box(self, 'Apply artifact', why)
+            return
+        t0 = float(app.ga_result_t0)
+        fw = float(app.ga_result_art_fwhm)
+        sig = fw / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        lo, hi = app.ga_result_t_window or (float(app.delay[0]),
+                                            float(app.delay[-1]))
+        if lo > t0 - 3.0 * sig or hi < t0 + 3.0 * sig:
+            reply = QtWidgets.QMessageBox.question(
+                self, 'Apply artifact',
+                f'The fit window [{lo:.4g}, {hi:.4g}] {app.t_unit_txt()} '
+                u'does not cover t₀ ± 3σ_art '
+                f'[{t0 - 3 * sig:.4g}, {t0 + 3 * sig:.4g}]: the artifact '
+                'outside the window is extrapolated.\n\nApply anyway?')
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+        app.apply_artifact_main(app.ga_result_B, t0, fw,
+                                app.ga_result_artifact)
+        self._reset_results(u'Artifact applied to main data — re-run Fit')
+
+    def revert_artifact_main(self):
+        """Remove the artifact subtraction from the main data."""
+        if self.app.art_main is None:
+            self._update_art_buttons()
+            return
+        self.app.revert_artifact_main()
+        self.lbl_status.setText('Artifact subtraction reverted.')
+        self._update_art_buttons()
 
     def do_reset(self):
         app = self.app
@@ -1130,6 +1404,10 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         app.ga_has_inf = False
         app.ga_t0 = 0.0; app.ga_t0_fixed = True
         app.ga_fwhm = 0.15; app.ga_fwhm_fixed = True
+        app.ga_artifact = 'off'
+        app.ga_art_sep = False
+        app.ga_art_fwhm = None
+        app.ga_art_fwhm_fixed = True
         # Also reset the fit window to the full delay extent.
         app.ga_t_min = None
         app.ga_t_max = None
@@ -1139,6 +1417,10 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.cb_t0_fix.setChecked(app.ga_t0_fixed)
         self.ed_fw.setValue(app.ga_fwhm)
         self.cb_fw_fix.setChecked(app.ga_fwhm_fixed)
+        self.dd_artifact.setCurrentIndex(self.dd_artifact.findData('off'))
+        self.cb_art_sep.setChecked(False)
+        self.ed_art_fw.setValue(app.ga_fwhm)
+        self.cb_art_fw_fix.setChecked(True)
         self._set_t_range_full()
         self.fill_table()
         self.btn_save_resid.setEnabled(False)
@@ -1230,6 +1512,11 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         app.ga_t0_fixed = self.cb_t0_fix.isChecked()
         app.ga_fwhm = self.ed_fw.value()
         app.ga_fwhm_fixed = self.cb_fw_fix.isChecked()
+        art_mode = self.dd_artifact.currentData() or 'off'
+        app.ga_artifact = art_mode
+        app.ga_art_sep = self.cb_art_sep.isChecked()
+        app.ga_art_fwhm = float(self.ed_art_fw.value())
+        app.ga_art_fwhm_fixed = self.cb_art_fw_fix.isChecked()
 
         if np.any(app.ga_tau_init <= 0):
             warn_box(self, 'Invalid input', 'All tau values must be positive.')
@@ -1247,7 +1534,8 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         n_in = int(t_mask.sum())
         # Need enough delay points to actually constrain the model:
         # roughly, more points than free parameters (at least 3 + N_tau).
-        n_min = 3 + len(app.ga_tau_init) + (1 if app.ga_has_inf else 0)
+        n_min = (3 + len(app.ga_tau_init) + (1 if app.ga_has_inf else 0)
+                 + ta_core.artifact_min_extra(art_mode))
         if n_in < n_min:
             warn_box(self, 'Fit window too narrow',
                      f'The chosen t-range [{t_lo:.4g}, {t_hi:.4g}] '
@@ -1284,6 +1572,21 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         override_msgs = self._apply_gpu_overrides()
         base_status = (f'Fitting on {n_in} delay points  ·  '
                        f'device {dev_desc}…')
+        # Artifact keywords only when On, so Off runs the unchanged call
+        art_kw = {}
+        art_notes = []
+        if art_mode != 'off':
+            art_kw = dict(
+                artifact=art_mode,
+                art_fwhm=app.ga_art_fwhm if app.ga_art_sep else None,
+                art_fwhm_fixed=app.ga_art_fwhm_fixed)
+            if not app.chirp_applied:
+                art_notes.append(u'single global t₀ — artifact may smear '
+                                 u'across λ (chirp not applied)')
+            if app.ga_stretch_on.any() and app.ga_irf_mode == 'skip':
+                art_notes.append(ARTIFACT_SKIP_WARN)
+            if art_notes:
+                base_status += '\n' + '  ·  '.join(art_notes)
         if override_msgs:
             self.lbl_status.setText(' | '.join(override_msgs)
                                     + '\n' + base_status)
@@ -1307,7 +1610,8 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                 irf_mode=app.ga_irf_mode,
                 backend=backend,
                 stop_check=self._on_stop_check,
-                method=method)
+                method=method,
+                **art_kw)
         except ta_core.GlobalAnalysisStopped:
             self._teardown_gpu_overrides()
             self._set_fit_running(False)
@@ -1326,6 +1630,9 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                     beta_init=app.ga_beta_init,
                     stretch_on=app.ga_stretch_on,
                     irf_mode=app.ga_irf_mode)
+                if art_kw:
+                    art_notes.append('artifact not supported by this '
+                                     'engine — fitted without it')
             except Exception as e:
                 self._teardown_gpu_overrides()
                 self._set_fit_running(False)
@@ -1358,6 +1665,24 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         app.ga_result_t_window = (t_lo, t_hi)
         app.ga_result_fit = res['fit']
         app.ga_result_rms = res['info']['rms']
+        # Artifact part (None / 'off' when not fitted).  The pipeline
+        # hash is only computed when On, so Off does no extra work.
+        B = res.get('B') if art_kw else None
+        app.ga_result_B = B
+        if B is not None:
+            app.ga_result_artifact_fit = res.get('artifact_fit')
+            app.ga_result_artifact = art_mode
+            app.ga_result_art_fwhm = res.get('art_fwhm')
+            app.ga_result_art_ignored = res['info'].get('artifact_ignored')
+            app.ga_result_pipeline_sig = app._compute_art_pre_hash()
+        else:
+            app.ga_result_artifact_fit = None
+            app.ga_result_artifact = 'off'
+            app.ga_result_art_fwhm = None
+            app.ga_result_art_ignored = None
+            app.ga_result_pipeline_sig = None
+        app.ga_result_on_artsub = (
+            getattr(app, 'art_main', None) is not None)
         try:
             EADS, _, _ = ta_core.compute_eads_from_dads(
                 res['A'], res['tau'], app.ga_has_inf)
@@ -1421,17 +1746,38 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                      + (' (fixed)' if app.ga_t0_fixed else ''))
         lines.append(f"IRF FWHM = {pm(res['fwhm'], 'fwhm_std')} {u}"
                      + (' (fixed)' if app.ga_fwhm_fixed else ''))
+        ignored = app.ga_result_art_ignored
+        if app.ga_result_B is not None:
+            lines.append(f'Artifact : {ARTIFACT_NAMES[art_mode]}')
+            fw_a = app.ga_result_art_fwhm
+            if not app.ga_art_sep:
+                lines.append(f'FWHM_art = {fw_a:.4g} {u} (= IRF FWHM)')
+            else:
+                sd = (stats or {}).get('art_fwhm_std', np.nan)
+                txt = (f'{fw_a:.4g} ± {sd:.2g}' if np.isfinite(sd)
+                       else f'{fw_a:.4g}')
+                lines.append(f'FWHM_art = {txt} {u}' + (
+                    ' (fixed)' if app.ga_art_fwhm_fixed else ''))
+            if ignored:
+                why = ('skip-mask' if ignored == 'skip-mask'
+                       else 'outside fit window')
+                lines.append(f'Artifact ignored ({why})')
+                art_notes.append(f'artifact ignored ({why})')
         lines.append('')
         lines.extend(ta_core.format_fit_stats(stats))
         lines.append('')
         lines.append(f'Compute device: {dev_desc}')
         self.txt_result.setPlainText('\n'.join(lines))
-        self.lbl_status.setText(
-            f"Done. RMS = {info['rms']:.3g}  ·  {method_lbl}  ·  "
-            f"{_fit_wall*1e3:.0f} ms  ·  device {dev_desc}")
+        done_txt = (f"Done. RMS = {info['rms']:.3g}  ·  {method_lbl}  ·  "
+                    f"{_fit_wall*1e3:.0f} ms  ·  device {dev_desc}")
+        if art_notes:
+            done_txt += '\n' + '  ·  '.join(art_notes)
+        self.lbl_status.setText(done_txt)
         # A fresh fit is now available — enable the explicit save
         # button.  The user clicks it to write the residual file.
         self.btn_save_resid.setEnabled(True)
+        self._set_export_enabled(True)
+        self._update_art_buttons()
         # Restore fan curve + stop keep-warm loop before releasing the
         # UI so the GPU winds down promptly.
         self._teardown_gpu_overrides()
@@ -1439,6 +1785,43 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         # before drawing so the buttons update immediately.
         self._set_fit_running(False)
         self.plot_results()
+        if ignored == 'outside-window':
+            warn_box(self, 'Artifact ignored',
+                     u'Fewer than n+1 delays lie within t₀_init ± 2σ_art, '
+                     u'so the artifact was not fitted — check the t₀ '
+                     u'initial value and the fit window.')
+
+    def save_artsub_residual(self):
+        """Write data − artifact (fit window) to the Residual store."""
+        app = self.app
+        if not self._has_art_result():
+            warn_box(self, 'No artifact',
+                     'Run a fit with the Artifact option on first.')
+            return
+        try:
+            t_fit = app.ga_result_delay
+            R = (np.asarray(app.ga_result_data, dtype=float)
+                 - np.asarray(app.ga_result_artifact_fit, dtype=float))
+            path = ta_residual_store.save_residual_2d(
+                'GA_artsub',
+                getattr(app, 'data_source_desc', '') or 'data',
+                app.wavelength, t_fit, R,
+                time_unit=getattr(app, 'time_unit', ''),
+                extra={
+                    'artifact_mode': app.ga_result_artifact,
+                    'art_fwhm': f'{float(app.ga_result_art_fwhm):.6g}',
+                    't0': f'{float(app.ga_result_t0):.6g}',
+                    't_window': f'[{float(t_fit[0]):.6g},'
+                                f'{float(t_fit[-1]):.6g}]',
+                })
+            self.lbl_status.setText(
+                f'Artifact-subtracted data saved: {os.path.basename(path)}')
+            info_box(self, 'Artifact-subtracted data saved',
+                     f'Wrote\n{path}\n\n'
+                     f'Re-open the Coherence dialog and click '
+                     f'"Load" to make it appear in the file list.')
+        except Exception as e:
+            warn_box(self, 'Save artifact-subtracted', f'Save failed:\n{e}')
 
     def save_residual(self):
         """Write the current GA residual (D − fit) to the residuals folder.
@@ -1551,6 +1934,11 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                    if ii < n_main else r'τ = ∞')
             ax.plot(app.wavelength, A[:, ii], '-',
                     color=cmap(ii), linewidth=1.4, label=lbl)
+        B = app.ga_result_B
+        if B is not None:
+            for j, lbl in enumerate(self._art_labels()):
+                ax.plot(app.wavelength, B[:, j], '--', color='grey',
+                        linewidth=1.2, label=lbl)
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
@@ -1573,6 +1961,14 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             lbl = (rf'τ_{ii+1}' if ii < n_main else r'τ = ∞')
             ax.plot(app.wavelength, col / pk, '-',
                     color=cmap(ii), linewidth=1.4, label=lbl)
+        if B is not None:
+            for j, lbl in enumerate(self._art_labels()):
+                col = B[:, j]
+                pk = np.nanmax(np.abs(col))
+                if not np.isfinite(pk) or pk == 0:
+                    pk = 1.0
+                ax.plot(app.wavelength, col / pk, '--', color='grey',
+                        linewidth=1.2, label=lbl)
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         ax.set_xlabel('Wavelength (nm)')
@@ -1744,6 +2140,11 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
 
         axes = [self.ax_exp, self.ax_fit_map, self.ax_res]
         datas = [D_exp, app.ga_result_fit, D_exp - app.ga_result_fit]
+        art = self._artsub()
+        if art is not None:
+            # data − artifact / fit − artifact; the residual is unchanged
+            datas[0] = D_exp - art
+            datas[1] = app.ga_result_fit - art
         R_fin = np.isfinite(datas[2])
         if R_fin.any():
             res_rms = float(np.sqrt(np.mean(datas[2][R_fin] ** 2)))
@@ -1761,6 +2162,9 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         titles = ['Experimental  (click to pick λ)' + window_str,
                   'Global fit',
                   f'Residual  (RMS = {res_rms:.3g})']
+        if art is not None:
+            titles[0] = u'Experimental − artifact' + window_str
+            titles[1] = u'Global fit − artifact'
         clims = [(-cl, cl), (-cl, cl), (-clr, clr)]
         from matplotlib.colors import ListedColormap
         cmap_obj = ListedColormap(cmap_arr)
@@ -1824,12 +2228,22 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                 ax.plot(app.delay[outside], app.deltaA[iw, outside],
                         '.', color='lightgrey', markersize=5,
                         label='Outside fit window')
-        ax.plot(t_fit, D_fit[iw, :], 'k.', markersize=7, label='Data')
-        ax.plot(t_fit, app.ga_result_fit[iw, :], 'r-',
-                linewidth=1.6, label='Fit')
+        art = self._artsub()
+        y_dat = D_fit[iw, :]
+        y_fit = app.ga_result_fit[iw, :]
+        if art is not None:
+            y_dat = y_dat - art[iw, :]
+            y_fit = y_fit - art[iw, :]
+        ax.plot(t_fit, y_dat, 'k.', markersize=7,
+                label='Data' if art is None else u'Data − artifact')
+        ax.plot(t_fit, y_fit, 'r-', linewidth=1.6,
+                label='Fit' if art is None else u'Fit − artifact')
         ax.plot(t_fit, D_fit[iw, :] - app.ga_result_fit[iw, :],
                 '-', color=(0.45, 0.45, 0.45), linewidth=0.9,
                 label='Residual')
+        if self._has_art_result():
+            ax.plot(t_fit, app.ga_result_artifact_fit[iw, :], '--',
+                    color='grey', linewidth=1.2, label='Artifact')
         ax.axhline(0, color='k', linestyle=':')
         ax.grid(True)
         ax.set_xlabel(f'Delay time ({app.t_unit_ax()})')
@@ -1863,7 +2277,8 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
     def _write_table(path, cols, header):
         delim = ',' if path.lower().endswith('.csv') else '\t'
         np.savetxt(path, np.column_stack(cols), delimiter=delim,
-                   header=delim.join(header), comments='', fmt='%.10g')
+                   header=delim.join(header), comments='', fmt='%.10g',
+                   encoding='utf-8')
 
     def _confirm_overwrite(self, path):
         reply = QtWidgets.QMessageBox.question(
@@ -1871,24 +2286,34 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             f'{os.path.basename(path)} already exists.\nOverwrite it?')
         return reply == QtWidgets.QMessageBox.Yes
 
-    def _export_pair(self, path, spec_cols, spec_hdr, kind, time_table):
+    def _export_pair(self, path, spec_cols, spec_hdr, kind, time_table,
+                     extra=None):
         """Write a spectra file and its time-domain companion
         (``_companion_path``).  ``time_table()`` returns (cols, header).
+        ``extra`` lists further companions as (kind, table) pairs with
+        ``table()`` returning (cols, header).
 
-        The save dialog already confirmed overwriting ``path``; the
+        The save dialog already confirmed overwriting ``path``; a
         companion is only asked about when it exists but ``path`` did
         not (otherwise it belongs to the export being replaced).
         Returns the companion path, or None when nothing / not all was
         written (the error names any file already written)."""
         path_t = self._companion_path(path, kind)
-        if (os.path.exists(path_t) and not os.path.exists(path)
-                and not self._confirm_overwrite(path_t)):
-            return None
+        extra = [(self._companion_path(path, k), tbl)
+                 for k, tbl in (extra or [])]
+        if not os.path.exists(path):
+            for p in [path_t] + [p for p, _ in extra]:
+                if os.path.exists(p) and not self._confirm_overwrite(p):
+                    return None
         done = []
         try:
             self._write_table(path, spec_cols, spec_hdr)
             done.append(path)
             self._write_table(path_t, *time_table())
+            done.append(path_t)
+            for p, tbl in extra:
+                self._write_table(p, *tbl())
+                done.append(p)
         except Exception as e:
             msg = f'Export failed:\n{e}'
             if done:
@@ -1917,16 +2342,49 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             t, C = self._time_profiles()
             return [t, C], [f'delay_{u}'] + [f'C_{n}' for n in names]
 
+        extra = []
+        if self._has_art_result():
+            # Artifact amplitudes as their own companion; the DADS file
+            # itself is identical with and without the artifact.
+            hdr_of = {1: u'G1 (σG′)', 2: u'G2 (σ²G″)', 0: 'G0 (G)'}
+            cols = list(ta_core.ARTIFACT_MODES[app.ga_result_artifact])
+            order = [c for c in (1, 2, 0) if c in cols]
+
+            def artifact_spectra():
+                B = app.ga_result_B
+                return ([app.wavelength]
+                        + [B[:, cols.index(c)] for c in order],
+                        ['wavelength_nm'] + [hdr_of[c] for c in order])
+            extra.append(('artifact_spectra', artifact_spectra))
+
         path_t = self._export_pair(
             path, [app.wavelength, app.ga_result_dads],
             ['wavelength_nm'] + [f'DADS_{n}' for n in names],
-            'kinetics', kinetics)
+            'kinetics', kinetics, extra=extra)
         if path_t:
             ta_opju_export.stage(app, 'DADS', path, os.path.basename(path))
             ta_opju_export.stage(app, 'DADS_kinetics', path_t,
                                  os.path.basename(path_t))
-            info_box(self, 'DADS exported',
-                     f'Spectra:  {path}\nKinetics: {path_t}')
+            path_a = self._companion_path(path, 'artifact_spectra')
+            self._stage_artifact_opju(path_a if extra else None)
+            msg = f'Spectra:  {path}\nKinetics: {path_t}'
+            if extra:
+                msg += f'\nArtifact: {path_a}'
+            elif os.path.exists(path_a):
+                msg += (f'\n\nNote: {os.path.basename(path_a)} is from '
+                        'an earlier artifact fit and was not updated.')
+            info_box(self, 'DADS exported', msg)
+
+    def _stage_artifact_opju(self, path):
+        """Origin-export hook for the artifact-spectra companion of a DADS
+        export: ``path`` is the written file, or None for an export
+        without the artifact (which must leave no stale artifact entry).
+        Stages / unstages the optional ``DADS_artifact`` opju sheet."""
+        if path:
+            ta_opju_export.stage(self.app, 'DADS_artifact', path,
+                                 os.path.basename(path))
+        else:
+            ta_opju_export.unstage(self.app, 'DADS_artifact')
 
     def export_eads(self):
         """EADS spectra + the sequential-model populations c_S(t) (the
@@ -2002,6 +2460,44 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         except Exception as e:
             warn_box(self, 'Export error', f'Export failed:\n{e}')
 
+    def export_artifact_subtracted(self):
+        """Fit-window data − artifact (2D) plus the artifact itself as the
+        ``…_artifact`` companion, on the fit delay axis."""
+        app = self.app
+        if not self._has_art_result():
+            warn_box(self, 'No artifact',
+                     'Run a fit with the Artifact option on first.')
+            return
+        D_fit = app.ga_result_data
+        t_axis = app.ga_result_delay
+        art = app.ga_result_artifact_fit
+        path, _ = ask_save_path(
+            self, 'Export artifact-subtracted data (2D matrix)',
+            app.default_save_path('GA_artifact_subtracted.csv'))
+        if not path:
+            return
+        path_a = self._companion_path(path, 'artifact')
+        if (os.path.exists(path_a) and not os.path.exists(path)
+                and not self._confirm_overwrite(path_a)):
+            return
+        delim = ',' if path.lower().endswith('.csv') else '\t'
+        done = []
+        try:
+            ta_core.write_data_file(path, app.wavelength, t_axis,
+                                    D_fit - art, delim)
+            done.append(path)
+            ta_core.write_data_file(path_a, app.wavelength, t_axis, art,
+                                    delim)
+        except Exception as e:
+            msg = f'Export failed:\n{e}'
+            if done:
+                msg += '\n\nAlready written:\n' + '\n'.join(done)
+            warn_box(self, 'Export error', msg)
+            return
+        info_box(self, 'Artifact-subtracted data exported',
+                 f'Data − artifact: {path}\nArtifact: {path_a}\n\n'
+                 f'({len(app.wavelength)} λ x {len(t_axis)} t)')
+
     def export_kinetics(self):
         app = self.app
         if app.ga_result_fit is None:
@@ -2020,6 +2516,10 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         mat = np.column_stack([t_col, data_col, fit_col, res_col])
         header = [f'delay_{app.t_unit_hdr()}', 'data_dA', 'fit_dA',
                   'residual_dA']
+        if self._has_art_result():
+            art_col = app.ga_result_artifact_fit[iw, :]
+            mat = np.column_stack([mat, art_col, data_col - art_col])
+            header += ['artifact_dA', 'data_minus_artifact_dA']
         suggested = f'kinetics_{wl_actual:.1f}nm.csv'
         path, _ = ask_save_path(
             self, f'Export kinetics @ {wl_actual:.2f} nm',

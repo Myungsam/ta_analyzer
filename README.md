@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.11.0** (최신) | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | erf fit에 coherent artifact 항 선택 옵션 (Off / G′+G″ / G+G′+G″) |
+| **v1.12.0** (최신) | [`v1.12.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.12.0) | Global Analysis·Kinetic Fit에 coherent artifact 항 선택 옵션, artifact 뺀 데이터 출력, opju DADS_artifact 시트 |
+| v1.11.0 | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | erf fit에 coherent artifact 항 선택 옵션 (Off / G′+G″ / G+G′+G″) |
 | v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Chirp points 표에서 고른 점 삭제(Remove Selected / Delete 키), 점 편집 버튼을 표 아래로 이동 |
 | v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper에서 두 방식 공통 설정(Search t, λ-smooth)을 별도 줄로 분리 |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
@@ -39,7 +40,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.11.0     # 최신 버전 (main과 같음)
+git checkout v1.12.0     # 최신 버전 (main과 같음)
+git checkout v1.11.0     # GA·Kinetic Fit artifact 옵션 이전
 git checkout v1.10.0     # artifact 옵션 이전
 git checkout v1.9.1      # 점 선택 삭제 이전
 git checkout v1.9.0      # t₀ Helper 배치 정리 이전
@@ -251,10 +253,11 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 | Kinetics / Spectra | Kinetics / Spectrum 패널 **Export pins** |
 | EADS + EADS_populations / DADS + DADS_kinetics | Global Analysis **Export EADS / DADS** |
 | Global_Fit / Residual | Global Analysis **Export Fit / Resid.** |
+| DADS_artifact (선택) | Global Analysis **Export DADS** — artifact 항을 켠 경우에만(5.11절) |
 
 1. 필요한 CSV를 반출한 뒤 main 창 2D map 위쪽의 **Export OPJU...** 를 누릅니다.
 2. **opju dataset info** 창에 시트별 상태(Saved / —), 반출한 파일 이름, 시각, 내용이 표시됩니다.
-3. **저장**을 누르면 저장 위치를 고르고(기본: 데이터 폴더의 `Transient absorption_filled.opju`), `add_function/ta_opju_builder.py`가 Origin으로 시트 11개와 그래프 9개를 만듭니다. 진행 상황은 창 아래에 나옵니다. **취소**는 창만 닫고 임시 저장은 그대로 둡니다.
+3. **저장**을 누르면 저장 위치를 고르고(기본: 데이터 폴더의 `Transient absorption_filled.opju`), `add_function/ta_opju_builder.py`가 Origin으로 시트 11개와 그래프 9개를 만듭니다(DADS_artifact를 임시 저장했으면 시트·그래프 1개씩 추가). 진행 상황은 창 아래에 나옵니다. **취소**는 창만 닫고 임시 저장은 그대로 둡니다.
 4. 임시 저장된 데이터는 **새 TA 데이터를 불러올 때** 모두 지워집니다(프로그램을 끌 때도 지워짐).
 
 - **Origin 2018 이상**이 설치되어 있어야 하고, Python으로 실행할 때는 `comtypes`가 필요합니다(`pip install comtypes`, exe에는 포함). 실행 중인 Origin이 있으면 저장하지 않으니 Origin을 모두 닫고 누르세요.
@@ -281,6 +284,30 @@ Chirp Correction 창 아래의 **t₀ Helper**에서 *Auto-place*와 overlay가 
   - **G′+G″ (sample)**: σG′ + σ²G″ (XPM 진동형). 샘플에서 t₀ 부근 artifact가 뚜렷할 때. 합성 데이터에서 t₀ 오차 36 → 11 fs.
   - **G+G′+G″ (solvent)**: G 항까지 포함. 용매만 측정한 데이터(계단 신호 없음)용. G는 계단의 t₀ 이동과 거의 구분되지 않아 샘플 데이터에는 권하지 않습니다.
   - artifact가 없는 데이터에서 켜면 오히려 오차가 커집니다(합성 데이터 8 → 약 35 fs). 항이 늘어난 만큼 파장당 필요한 최소 delay 수도 늘어납니다(8 / 12 / 14).
+
+### 5.11 Global Analysis / Kinetic Fit의 coherent artifact 항 (v1.12.0)
+
+t₀ 부근 coherent artifact(XPM 진동 등)가 뚜렷한 샘플에서, Global Analysis와 Kinetic Fit 모델에 artifact 항을 더해 지수 성분과 함께 피팅합니다. 항은 Chirp erf fit(5.10절)과 같습니다.
+
+| 설정 | 내용 |
+|---|---|
+| **Artifact** | **Off**(기본) / **G′+G″ (sample)**: σG′ + σ²G″ / **G+G′+G″ (solvent)**: G까지. 중심은 피팅된 t₀, 폭은 IRF σ. 진폭 B(λ)는 파장(또는 trace)마다 선형으로 풂 |
+| **Separate artifact FWHM** | 체크하면 artifact 폭을 IRF와 따로 둠(초기값 입력, **Fixed**로 고정 가능, 1σ 보고) |
+| **From Chirp** | Chirp 창에서 마지막으로 돌린 erf fit의 Artifact 모드와 FWHM 중앙값을 가져옴(FWHM은 공유 IRF FWHM 초기값으로). erf 결과가 없으면 알림만 띄우고 바꾸지 않음. 창을 열 때 자동으로 바꾸지 않음 |
+
+- **결과 표시**
+  - GA: DADS 패널에 artifact 스펙트럼을 회색 점선(G′/G″)으로 그립니다. EADS 변환에는 넣지 않습니다. kinetics에는 artifact 성분이 점선으로 나옵니다.
+  - Kinetic Fit: 결과 표에 trace마다 B′/B″ ± σ 행이 추가됩니다. population ratio는 지수 성분만으로 계산합니다.
+- **artifact 뺀 데이터**
+  - **Show artifact-subtracted**: 창 안의 맵·kinetics(또는 trace)를 data − artifact로 표시합니다. 메인 데이터는 바뀌지 않습니다.
+  - **Art.-sub** (GA): `GA_artifact_subtracted.csv`와 artifact 성분 `GA_artifact_subtracted_artifact.csv`를 저장합니다. Kinetic Fit은 artifact가 켜져 있을 때 trace Export에 `artifact`·`data_minus_artifact` 열을 더합니다.
+  - **Art.-sub → Residual store**: artifact 뺀 데이터를 `residuals/`에 저장합니다(Meta에 artifact 모드).
+  - **Apply to main data** (GA만): 메인 데이터에서 artifact를 뺍니다. 2D map 제목에 `artifact-sub`, 상태 표시줄에 `[artifact-sub]`가 붙고, GA 결과는 초기화되니 다시 Run Fit 하세요. **Revert artifact**로 되돌립니다. 이후 crop·resampling·t₀ shift·chirp·BG·solvent·새 데이터·Revert로 데이터가 바뀌면 자동으로 해제되고 상태 표시줄에 한 번 알립니다.
+- **Export**: artifact가 켜져 있으면 **Export DADS**가 `DADS_artifact_spectra.csv`를 더 저장하고, opju에는 `DADS_artifact` 시트와 그래프가 추가됩니다(5.9절). 끄면 모든 반출 파일과 opju가 이전과 같습니다.
+- **주의**
+  - artifact가 없는 데이터에서 켜면 τ·t₀가 오히려 치우칠 수 있습니다. 샘플에는 G′+G″를, 용매만 측정한 데이터에만 G+G′+G″를 쓰세요.
+  - stretched 성분 + IRF mode `skip`이면 t₀ 부근이 피팅에서 빠져 artifact가 무시됩니다(경고 표시, Kinetic Fit은 numerical로 바꿀지 묻습니다). 피팅 구간 안 t₀ ± 2σ에 delay 점이 부족해도 무시하고 알립니다(t₀ 초기값과 구간을 확인하세요).
+  - chirp 보정 전이면 파장마다 t₀가 달라 하나의 t₀로 맞지 않습니다. chirp 보정 후 쓰세요.
 
 ## 6. 입력 파일 형식
 
@@ -329,6 +356,12 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.12.0** (2026-11-20)
+- Global Analysis / Kinetic Fit: **Artifact** 옵션(Off / G′+G″ / G+G′+G″), **Separate artifact FWHM**, **From Chirp** (5.11절)
+- GA DADS에 artifact 스펙트럼 점선, Kinetic Fit 표에 B′/B″ ± σ (population ratio에서 제외)
+- artifact 뺀 데이터: 창 안 토글, CSV 저장, Residual store, GA **Apply to main data** / **Revert artifact** (데이터가 바뀌면 자동 해제)
+- opju에 선택 시트 `DADS_artifact` 추가 (`add_function/ta_opju_builder.py`가 TA_data_processing 원본과 달라짐)
 
 **v1.11.0** (2026-11-20)
 - Chirp t₀ Helper erf fit: **Artifact** 콤보로 coherent artifact 항 선택 — Off(기본) / G′+G″ (sample) / G+G′+G″ (solvent). IRF σ와 t₀를 공유하고 진폭은 선형으로 풂. 상태 표시줄에 사용한 모델 표시

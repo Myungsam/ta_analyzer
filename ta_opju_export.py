@@ -42,6 +42,13 @@ SLOTS = [
     ('GA_residual', 'Residual', 'Global Analysis → Export Resid.'),
 ]
 SLOT_KEYS = [s[0] for s in SLOTS]
+# Sheets that exist only when staged: not counted in "n / n", not passed
+# to the builder (nor listed in the dialog) unless staged.
+OPTIONAL_SLOTS = [
+    ('DADS_artifact', 'DADS_artifact',
+     'Global Analysis → Export DADS (artifact on)'),
+]
+OPTIONAL_KEYS = [s[0] for s in OPTIONAL_SLOTS]
 OPJU_NAME = 'Transient absorption_filled.opju'
 
 
@@ -75,7 +82,7 @@ class OpjuStaging:
         return self._dir
 
     def _record(self, key, dst, source, note):
-        if key not in SLOT_KEYS:
+        if key not in SLOT_KEYS and key not in OPTIONAL_KEYS:
             raise KeyError(key)
         self.entries[key] = {
             'path': dst, 'source': source, 'note': note,
@@ -109,7 +116,8 @@ class OpjuStaging:
         or swap its inputs.  Returns (folder, files mapping)."""
         snap = tempfile.mkdtemp(prefix='ta_opju_build_')
         files = {}
-        for k in SLOT_KEYS:
+        for k in SLOT_KEYS + [k for k in OPTIONAL_KEYS
+                              if k in self.entries]:
             e = self.entries.get(k)
             if e is None:
                 files[k] = None
@@ -119,9 +127,22 @@ class OpjuStaging:
         return snap, files
 
     def files(self) -> dict:
-        """Builder ``files`` mapping: every key, None when not staged."""
-        return {k: (self.entries[k]['path'] if k in self.entries else None)
-                for k in SLOT_KEYS}
+        """Builder ``files`` mapping: every SLOTS key (None when not
+        staged) plus the optional keys that are staged."""
+        files = {k: (self.entries[k]['path'] if k in self.entries else None)
+                 for k in SLOT_KEYS}
+        files.update((k, self.entries[k]['path'])
+                     for k in OPTIONAL_KEYS if k in self.entries)
+        return files
+
+    def unstage(self, key):
+        """Drop ``key``'s staging (no-op when it is not staged)."""
+        e = self.entries.pop(key, None)
+        if e is not None:
+            try:
+                os.remove(e['path'])
+            except OSError:
+                pass
 
     def clear(self):
         self.entries.clear()
@@ -138,6 +159,13 @@ def stage(app, key, path, note=''):
     """Stage an export; never lets a staging problem break the export."""
     try:
         app.opju_stage.stage_file(key, path, note)
+    except Exception:
+        traceback.print_exc()
+
+
+def unstage(app, key):
+    try:
+        app.opju_stage.unstage(key)
     except Exception:
         traceback.print_exc()
 
@@ -226,7 +254,9 @@ class OpjuDatasetDialog(QtWidgets.QDialog):
 
     def refresh(self):
         ent = self.app.opju_stage.entries
-        for r, (key, sheet, how) in enumerate(SLOTS):
+        rows = SLOTS + [s for s in OPTIONAL_SLOTS if s[0] in ent]
+        self.tbl.setRowCount(len(rows))
+        for r, (key, sheet, how) in enumerate(rows):
             e = ent.get(key)
             cells = ([sheet, 'Saved', e['source'], e['time'],
                       e['note'] or how] if e else
@@ -238,11 +268,11 @@ class OpjuDatasetDialog(QtWidgets.QDialog):
                                      else QtCore.Qt.gray)
                 self.tbl.setItem(r, c, it)
         self.tbl.resizeColumnsToContents()
-        n = len(ent)
+        n = sum(k in ent for k in SLOT_KEYS)
         self.lbl_summary.setText(
             f'{n} / {len(SLOTS)} sheets staged.  Sheets without data are '
             'created empty (with an empty graph frame).')
-        self.btn_save.setEnabled(n > 0 and self._thread is None)
+        self.btn_save.setEnabled(bool(ent) and self._thread is None)
 
     # ---- 저장 ----
     def is_building(self) -> bool:

@@ -23,6 +23,15 @@ from ta_widgets import (
     style_button, info_box, warn_box, ask_save_path,
 )
 import ta_core
+import ta_residual_store
+from ta_ga import (
+    ARTIFACT_CHOICES, ARTIFACT_LABELS, ARTIFACT_NAMES, ARTIFACT_TOOLTIP,
+    ARTIFACT_SKIP_WARN, ART_SEP_TOOLTIP, FROM_CHIRP_TOOLTIP,
+    seed_artifact_from_chirp,
+)
+
+# Basis column index → params-CSV key suffix (B_G / B_dG / B_d2G).
+_ART_KEYS = {0: 'G', 1: 'dG', 2: 'd2G'}
 
 
 class KineticFitDialog(QtWidgets.QDialog):
@@ -129,6 +138,32 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.dd_irf.addItem('Numerical convolution', 'numerical')
         self.dd_irf.setCurrentIndex(0)
         irf_lay.addWidget(self.dd_irf, 2, 1, 1, 2)
+        # Coherent artifact (G / G′ / G″ at t₀), fitted jointly; dialog-local
+        irf_lay.addWidget(make_label('Artifact:'), 3, 0)
+        self.dd_artifact = QtWidgets.QComboBox()
+        for lbl, key in ARTIFACT_CHOICES:
+            self.dd_artifact.addItem(lbl, key)
+        self.dd_artifact.setCurrentIndex(self.dd_artifact.findData('off'))
+        self.dd_artifact.setToolTip(
+            ARTIFACT_TOOLTIP + u'\n\nWith stretched rows use '
+            u'"Numerical convolution" as the Stretched-IRF mode.')
+        irf_lay.addWidget(self.dd_artifact, 3, 1)
+        self.btn_from_chirp = QtWidgets.QPushButton('From Chirp')
+        self.btn_from_chirp.setToolTip(FROM_CHIRP_TOOLTIP)
+        irf_lay.addWidget(self.btn_from_chirp, 3, 2)
+        self.cb_art_sep = QtWidgets.QCheckBox('Separate artifact FWHM')
+        self.cb_art_sep.setToolTip(ART_SEP_TOOLTIP)
+        irf_lay.addWidget(self.cb_art_sep, 4, 0)
+        self.ed_art_fw = make_double_edit(0.15, minv=1e-6)
+        irf_lay.addWidget(self.ed_art_fw, 4, 1)
+        self.cb_art_fw_fix = QtWidgets.QCheckBox('Fixed')
+        self.cb_art_fw_fix.setChecked(True)
+        irf_lay.addWidget(self.cb_art_fw_fix, 4, 2)
+        self.lbl_art_warn = QtWidgets.QLabel('')
+        self.lbl_art_warn.setWordWrap(True)
+        self.lbl_art_warn.setStyleSheet('color: #b35a00;')
+        self.lbl_art_warn.setVisible(False)
+        irf_lay.addWidget(self.lbl_art_warn, 5, 0, 1, 3)
         lL.addWidget(irf_box)
 
         # Fit time-range
@@ -158,6 +193,14 @@ class KineticFitDialog(QtWidgets.QDialog):
         ar.addWidget(self.btn_run); ar.addWidget(self.btn_reset)
         ar.addWidget(self.btn_save_resid)
         lL.addLayout(ar)
+        self.btn_artsub_resid = QtWidgets.QPushButton(
+            u'Art.-sub → Residual store')
+        self.btn_artsub_resid.setToolTip(
+            'Write data − artifact (fit window) to the Residual store — '
+            'one file per trace for a global fit.  Needs a fit with the '
+            'Artifact option on.')
+        self.btn_artsub_resid.setEnabled(False)
+        lL.addWidget(self.btn_artsub_resid)
 
         ex = QtWidgets.QHBoxLayout()
         ex.addWidget(make_label('Export:'))
@@ -187,6 +230,13 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.dd_scale = QtWidgets.QComboBox()
         self.dd_scale.addItems(['Log', 'Linear'])
         ctrl.addWidget(self.dd_scale)
+        self.cb_artsub = QtWidgets.QCheckBox('Show artifact-subtracted')
+        self.cb_artsub.setToolTip(
+            'Draw data − artifact and fit − artifact (fit window).  '
+            'Needs a fit with the Artifact option on; the main data is '
+            'not changed.')
+        self.cb_artsub.setEnabled(False)
+        ctrl.addWidget(self.cb_artsub)
         ctrl.addStretch(1)
         rL.addLayout(ctrl)
 
@@ -214,8 +264,18 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.btn_exp_param.clicked.connect(self._export_params)
         self.btn_save_resid.clicked.connect(self.save_residual)
         self.dd_scale.currentTextChanged.connect(lambda _: self._refresh_plot())
+        self.cb_artsub.toggled.connect(lambda _: self._refresh_plot())
+        self.btn_artsub_resid.clicked.connect(self.save_artsub_residual)
+        self.btn_from_chirp.clicked.connect(
+            lambda: seed_artifact_from_chirp(self.app, self.dd_artifact,
+                                             self.ed_fw, self))
+        self.cb_art_sep.toggled.connect(self._update_art_controls)
+        self.dd_artifact.currentIndexChanged.connect(self._update_art_warn)
+        self.dd_irf.currentIndexChanged.connect(self._update_art_warn)
+        self.tbl.itemChanged.connect(self._update_art_warn)
 
         self._populate_table(2)
+        self._update_art_controls()
         self._refresh_plot()
 
     def closeEvent(self, ev):
@@ -279,6 +339,42 @@ class KineticFitDialog(QtWidgets.QDialog):
             })
         return rows
 
+    # ----------------- Artifact controls -----------------
+    def _update_art_controls(self, *_):
+        """Separate-FWHM edit / Fixed follow the checkbox."""
+        sep = self.cb_art_sep.isChecked()
+        self.ed_art_fw.setEnabled(sep)
+        self.cb_art_fw_fix.setEnabled(sep)
+        self._update_art_warn()
+
+    def _art_skip_conflict(self):
+        """Artifact On while a stretched row uses the 'skip' IRF mode."""
+        stretched = False
+        for r in range(self.tbl.rowCount()):
+            it = self.tbl.item(r, 2)
+            if it is not None and it.checkState() == QtCore.Qt.Checked:
+                stretched = True
+        return (self.dd_artifact.currentData() != 'off' and stretched
+                and self.dd_irf.currentData() == 'skip')
+
+    def _update_art_warn(self, *_):
+        on = self._art_skip_conflict()
+        self.lbl_art_warn.setText(ARTIFACT_SKIP_WARN if on else '')
+        self.lbl_art_warn.setVisible(on)
+
+    def _has_art_result(self):
+        res = self._last_fit
+        return res is not None and res.get('B') is not None
+
+    def _update_art_buttons(self):
+        on = self._has_art_result()
+        self.cb_artsub.setEnabled(on)
+        self.btn_artsub_resid.setEnabled(on)
+        if not on and self.cb_artsub.isChecked():
+            self.cb_artsub.blockSignals(True)
+            self.cb_artsub.setChecked(False)
+            self.cb_artsub.blockSignals(False)
+
     # ----------------- Helpers -----------------
     def _set_t_full(self):
         self.ed_t_min.setValue(float(self.app.delay[0]))
@@ -335,10 +431,13 @@ class KineticFitDialog(QtWidgets.QDialog):
             src = 'λ window'
             if self.cb_pinned.isChecked():
                 note = '  (no pinned kinetics in the main window)'
+        if getattr(app, 'art_main', None) is not None:
+            note += '  (main data is artifact-subtracted)'
         self._t = app.delay.copy()
         self._traces = traces
         self._last_fit = None
         self.btn_save_resid.setEnabled(False)
+        self._update_art_buttons()
         kind = 'global fit' if len(traces) > 1 else 'single-trace fit'
         self.lbl_import.setText(
             f'{len(traces)} trace(s) from {src} → {kind}{note}')
@@ -352,10 +451,14 @@ class KineticFitDialog(QtWidgets.QDialog):
         self.ed_t0.setValue(0.0); self.cb_t0_fix.setChecked(True)
         self.ed_fw.setValue(0.15); self.cb_fw_fix.setChecked(True)
         self.dd_irf.setCurrentIndex(0)
+        self.dd_artifact.setCurrentIndex(self.dd_artifact.findData('off'))
+        self.cb_art_sep.setChecked(False)
+        self.ed_art_fw.setValue(0.15); self.cb_art_fw_fix.setChecked(True)
         self._set_t_full()
         self._populate_table(2)
         self._last_fit = None
         self.btn_save_resid.setEnabled(False)
+        self._update_art_buttons()
         self._refresh_plot()
         self.lbl_status.setText('Reset to defaults.')
         self.txt_result.setPlainText('Results will appear here after fitting.')
@@ -379,6 +482,27 @@ class KineticFitDialog(QtWidgets.QDialog):
         if np.any(stretch_on & (beta_init <= 0)):
             warn_box(self, 'Invalid input', 'β must be > 0.')
             return
+        art_mode = ta_core._artifact_mode(self.dd_artifact.currentData())
+        if art_mode != 'off' and self._art_skip_conflict():
+            ans = QtWidgets.QMessageBox.question(
+                self, 'Artifact with stretched rows',
+                u'Stretched rows with the "skip" IRF mode mask the t₀ '
+                u'region, so the artifact would be ignored.\n\n'
+                u'Switch IRF mode to numerical?',
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+                | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Yes)
+            if ans == QtWidgets.QMessageBox.Cancel:
+                return
+            if ans == QtWidgets.QMessageBox.Yes:
+                self.dd_irf.setCurrentIndex(self.dd_irf.findData('numerical'))
+        kw_art = {}
+        if art_mode != 'off':
+            sep = self.cb_art_sep.isChecked()
+            kw_art = dict(
+                artifact=art_mode,
+                art_fwhm=float(self.ed_art_fw.value()) if sep else None,
+                art_fwhm_fixed=self.cb_art_fw_fix.isChecked() if sep else True)
 
         t_full = self._t
         Y_full = np.vstack([tr['y'] for tr in self._traces])
@@ -389,7 +513,8 @@ class KineticFitDialog(QtWidgets.QDialog):
         m = (t_full >= t_lo) & (t_full <= t_hi)
         n_in = int(m.sum())
         has_inf = self.cb_inf.isChecked()
-        n_min = int(tau_init.size) + (1 if has_inf else 0) + 1
+        n_min = (int(tau_init.size) + (1 if has_inf else 0) + 1
+                 + ta_core.artifact_min_extra(art_mode))
         if n_in < n_min:
             warn_box(self, 'Window too narrow',
                      f'Need ≥ {n_min} delay points; got {n_in}.')
@@ -411,8 +536,9 @@ class KineticFitDialog(QtWidgets.QDialog):
                     Y_fit, t_fit, tau_init,
                     float(self.ed_t0.value()), float(self.ed_fw.value()),
                     tau_fixed, t0_fixed, fw_fixed, has_inf,
-                    method='trf', **kw)
+                    method='trf', **kw, **kw_art)
                 A, fit = r['A'], r['fit']
+                B, art_fit = r.get('B'), r.get('artifact_fit')
                 resid = Y_fit - fit
                 if stretch_on.any() and kw['irf_mode'] == 'skip':
                     sig = r['fwhm'] / (2.0 * np.sqrt(2.0 * np.log(2.0)))
@@ -424,9 +550,12 @@ class KineticFitDialog(QtWidgets.QDialog):
                     t_fit, Y_fit[0], tau_init=tau_init, tau_fixed=tau_fixed,
                     t0_init=float(self.ed_t0.value()), t0_fixed=t0_fixed,
                     fwhm_init=float(self.ed_fw.value()), fwhm_fixed=fw_fixed,
-                    has_inf=has_inf, **kw)
+                    has_inf=has_inf, **kw, **kw_art)
                 A, fit = r['A'][None, :], r['fit'][None, :]
                 resid = r['residual'][None, :]
+                B, art_fit = r.get('B'), r.get('artifact_fit')
+                if B is not None:
+                    B, art_fit = B[None, :], art_fit[None, :]
         except Exception as e:
             warn_box(self, 'Fit error', f'Fit failed:\n{e}')
             self.lbl_status.setText('Fit failed.')
@@ -448,16 +577,35 @@ class KineticFitDialog(QtWidgets.QDialog):
             '_tau_fixed': tau_fixed, '_beta_fixed': beta_fixed,
             '_t0_fixed': t0_fixed, '_fw_fixed': fw_fixed,
             '_window': (t_lo, t_hi, n_in),
+            # Coherent artifact: B (n_traces, n_terms) / artifact_fit
+            # (n_traces, N) are None when Off; A excludes B.
+            'B': B, 'artifact_fit': art_fit,
+            'art_fwhm': r.get('art_fwhm'), 'artifact': art_mode,
+            'art_ignored': r['info'].get('artifact_ignored'),
+            '_art_sep': bool(kw_art) and kw_art['art_fwhm'] is not None,
+            '_art_fw_fixed': kw_art.get('art_fwhm_fixed', True),
         }
         self._last_fit = res
         self.txt_result.setPlainText('\n'.join(self._report_lines(res)))
-        self.lbl_status.setText(
-            f'{"Global" if is_global else "Single-trace"} fit done — '
-            f'RMS = {res["info"]["rms"]:.3g}')
+        done = (f'{"Global" if is_global else "Single-trace"} fit done — '
+                f'RMS = {res["info"]["rms"]:.3g}')
+        if res['art_ignored']:
+            done += '\n' + self._art_ignored_msg(res['art_ignored'])
+        self.lbl_status.setText(done)
         # A fresh fit is now available — enable the explicit save
         # button.  The user clicks it to write the residual file.
         self.btn_save_resid.setEnabled(True)
+        self._update_art_buttons()
         self._refresh_plot()
+
+    @staticmethod
+    def _art_ignored_msg(why):
+        if why == 'skip-mask':
+            return (u'Artifact ignored (skip-mask): stretched rows with '
+                    u'the "skip" IRF mode — use "Numerical convolution".')
+        return (u'Artifact ignored (outside fit window): fewer than n+1 '
+                u'delays within t₀_init ± 2σ_art — check the t₀ initial '
+                u'value and the fit window.')
 
     def _report_lines(self, res):
         u = self.app.t_unit_txt()
@@ -507,6 +655,23 @@ class KineticFitDialog(QtWidgets.QDialog):
                 sd = None if st is None else st['A_std'][j, c]
                 lines.append(f'    {nm} = {pm(res["A"][j, c], sd)}'
                              f'   ({res["ratio"][j, c]:.1f} %)')
+            if res.get('B') is not None:
+                b_std = None if st is None else st.get('B_std')
+                for c, k in enumerate(ta_core.ARTIFACT_MODES[res['artifact']]):
+                    sd = None if b_std is None else b_std[j, c]
+                    lines.append(f'    B_{ARTIFACT_LABELS[k]} = '
+                                 f'{pm(res["B"][j, c], sd)}')
+        if res.get('B') is not None:
+            lines.append(f'Artifact: {ARTIFACT_NAMES[res["artifact"]]}')
+            fw_a = res['art_fwhm']
+            if not res['_art_sep']:
+                lines.append(f'FWHM_art = {fw_a:.4g} {u} (= IRF FWHM)')
+            else:
+                lines.append(
+                    f'FWHM_art = {pm(fw_a, sd_of("art_fwhm_std"))} {u}'
+                    + ('  (fixed)' if res['_art_fw_fixed'] else ''))
+            if res['art_ignored']:
+                lines.append(self._art_ignored_msg(res['art_ignored']))
         lines.append('')
         lines.extend(ta_core.format_fit_stats(st))
         return lines
@@ -560,6 +725,44 @@ class KineticFitDialog(QtWidgets.QDialog):
         except Exception as e:
             warn_box(self, 'Save residual', f'Save failed:\n{e}')
 
+    def save_artsub_residual(self):
+        """Write data − artifact (fit window) to the Residual store —
+        one 1D file per trace."""
+        res = self._last_fit
+        if not self._has_art_result():
+            warn_box(self, 'No artifact',
+                     'Run a fit with the Artifact option on first.')
+            return
+        app = self.app
+        t_fit = np.asarray(res['_t_fit'], dtype=float)
+        try:
+            paths = []
+            for j, wl in enumerate(res['_wls']):
+                y_sub = (np.asarray(res['_Y_fit'][j], float)
+                         - np.asarray(res['artifact_fit'][j], float))
+                paths.append(ta_residual_store.save_residual_1d(
+                    'KFit_artsub',
+                    getattr(app, 'data_source_desc', '') or 'data',
+                    t_fit, y_sub, wavelength=float(wl),
+                    time_unit=getattr(app, 'time_unit', ''),
+                    extra={
+                        'artifact_mode': res['artifact'],
+                        'art_fwhm': f'{float(res["art_fwhm"]):.6g}',
+                        't0': f'{float(res["t0"]):.6g}',
+                        't_window': f'[{float(t_fit[0]):.6g},'
+                                    f'{float(t_fit[-1]):.6g}]',
+                    }))
+            self.lbl_status.setText(
+                f'Artifact-subtracted data saved: '
+                f'{os.path.basename(paths[0])}'
+                + (f' (+{len(paths) - 1})' if len(paths) > 1 else ''))
+            info_box(self, 'Artifact-subtracted data saved',
+                     'Wrote\n' + '\n'.join(paths) + '\n\n'
+                     'Re-open the Coherence dialog and click "Load" to '
+                     'make it appear in the file list.')
+        except Exception as e:
+            warn_box(self, 'Save artifact-subtracted', f'Save failed:\n{e}')
+
     # ----------------- Plotting -----------------
     def _refresh_plot(self):
         app = self.app
@@ -577,14 +780,31 @@ class KineticFitDialog(QtWidgets.QDialog):
         single = len(self._traces) == 1
         cmap = ta_core._mpl_cm.get_cmap('tab10')
         fit = self._last_fit
+        art = fit is not None and fit.get('B') is not None
+        sub = art and self.cb_artsub.isChecked()
         for j, tr in enumerate(self._traces):
             col = 'k' if single else cmap(j % 10)
-            ax.plot(t, tr['y'], '.', color=col, markersize=4,
-                    label='data' if single else tr['label'])
+            if sub:
+                # data − artifact / fit − artifact on the fit window
+                ax.plot(fit['_t_fit'],
+                        fit['_Y_fit'][j] - fit['artifact_fit'][j], '.',
+                        color=col, markersize=4,
+                        label=('data − artifact' if single
+                               else tr['label']))
+            else:
+                ax.plot(t, tr['y'], '.', color=col, markersize=4,
+                        label='data' if single else tr['label'])
             if fit is not None:
-                ax.plot(fit['_t_fit'], fit['fit'][j], '-',
+                y_fit = fit['fit'][j]
+                if sub:
+                    y_fit = y_fit - fit['artifact_fit'][j]
+                ax.plot(fit['_t_fit'], y_fit, '-',
                         color='r' if single else col, linewidth=1.4,
                         label='fit' if single else None)
+                if art:
+                    ax.plot(fit['_t_fit'], fit['artifact_fit'][j], '--',
+                            color='0.45' if single else col, linewidth=1.0,
+                            label='artifact' if single else None)
                 axR.plot(fit['_t_fit'], fit['residual'][j], '.',
                          color=(0.4, 0.4, 0.4) if single else col,
                          markersize=3)
@@ -631,6 +851,10 @@ class KineticFitDialog(QtWidgets.QDialog):
             sfx = f'_{wl:.1f}nm' if res['_global'] else ''
             cols += [res['_Y_fit'][j], res['fit'][j], res['residual'][j]]
             hdr += [f'data{sfx}', f'fit{sfx}', f'residual{sfx}']
+            if res.get('B') is not None:
+                a = res['artifact_fit'][j]
+                cols += [a, res['_Y_fit'][j] - a]
+                hdr += [f'artifact{sfx}', f'data_minus_artifact{sfx}']
         delim = ',' if path.lower().endswith('.csv') else '\t'
         try:
             np.savetxt(path, np.column_stack(cols), delimiter=delim,
@@ -665,6 +889,15 @@ class KineticFitDialog(QtWidgets.QDialog):
                  ['fwhm', g(r['fwhm'])],
                  ['fwhm_std', g(st.get('fwhm_std', nan))],
                  ['irf_mode', str(r['info']['irf_mode'])]]
+        art_on = r.get('B') is not None
+        if art_on:
+            rows += [['artifact_mode', r['artifact']],
+                     ['art_fwhm', g(r['art_fwhm'])],
+                     ['art_fwhm_std', g(st.get('art_fwhm_std', nan))],
+                     ['artifact_ignored', str(r['art_ignored'] or '')]]
+            art_keys = [_ART_KEYS[k]
+                        for k in ta_core.ARTIFACT_MODES[r['artifact']]]
+            B_std = st.get('B_std', np.full(r['B'].shape, nan))
         tau_std = st.get('tau_std', np.full(n_tau, nan))
         beta_std = st.get('beta_std', np.full(n_tau, nan))
         for i in range(n_tau):
@@ -690,6 +923,10 @@ class KineticFitDialog(QtWidgets.QDialog):
                 rows += [[f'{pre}A_{nm}', g(r['A'][j, c])],
                          [f'{pre}A_{nm}_std', g(A_std[j, c])],
                          [f'{pre}ratio_{nm}_pct', g(r['ratio'][j, c])]]
+            if art_on:
+                for c, k in enumerate(art_keys):
+                    rows += [[f'{pre}B_{k}', g(r['B'][j, c])],
+                             [f'{pre}B_{k}_std', g(B_std[j, c])]]
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 for k, v in rows:

@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.11.0** (latest) | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | Optional coherent-artifact terms in the erf fit (Off / G′+G″ / G+G′+G″) |
+| **v1.12.0** (latest) | [`v1.12.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.12.0) | Optional coherent-artifact terms in Global Analysis and Kinetic Fit, artifact-subtracted outputs, opju DADS_artifact sheet |
+| v1.11.0 | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | Optional coherent-artifact terms in the erf fit (Off / G′+G″ / G+G′+G″) |
 | v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Remove selected points from the Chirp points table (Remove Selected / Delete key); point editing buttons moved below the table |
 | v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper: settings shared by both methods (Search t, λ-smooth) moved to their own row |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
@@ -39,7 +40,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.11.0     # latest (same as main)
+git checkout v1.12.0     # latest (same as main)
+git checkout v1.11.0     # before the GA / Kinetic Fit artifact option
 git checkout v1.10.0     # before the artifact option
 git checkout v1.9.1      # before selected-point removal
 git checkout v1.9.0      # before the t₀ Helper layout cleanup
@@ -251,6 +253,7 @@ Saving a CSV with one of the exports below also **stages** the same data for the
 | Kinetics / Spectra | Kinetics / Spectrum panel **Export pins** |
 | EADS + EADS_populations / DADS + DADS_kinetics | Global Analysis **Export EADS / DADS** |
 | Global_Fit / Residual | Global Analysis **Export Fit / Resid.** |
+| DADS_artifact (optional) | Global Analysis **Export DADS** — only with the artifact terms on (section 5.11) |
 
 1. Export the CSVs you need, then press **Export OPJU...** above the main 2D map.
 2. The **opju dataset info** window lists each sheet's status (Saved / —), the exported file, time and details.
@@ -281,6 +284,30 @@ Search t, λ-smooth and Recompute on the top **Common (both methods)** row apply
   - **G′+G″ (sample)**: σG′ + σ²G″ (XPM-like oscillation). For samples with a clear artifact near t₀. On synthetic data the t₀ error drops from 36 to 11 fs.
   - **G+G′+G″ (solvent)**: also includes G. For solvent-only data (no step signal). G is nearly indistinguishable from a t₀ shift of the step, so it is not recommended for sample data.
   - Turning it on for data without an artifact makes the error larger (synthetic data: 8 → about 35 fs). Each mode also needs more delays per wavelength (8 / 12 / 14).
+
+### 5.11 Coherent-artifact terms in Global Analysis / Kinetic Fit (v1.12.0)
+
+For samples with a clear coherent artifact near t₀ (e.g. XPM oscillation), the Global Analysis and Kinetic Fit models can include artifact terms fitted together with the exponentials. The terms are the same as in the Chirp erf fit (section 5.10).
+
+| Setting | Description |
+|---|---|
+| **Artifact** | **Off** (default) / **G′+G″ (sample)**: σG′ + σ²G″ / **G+G′+G″ (solvent)**: also G. Centred at the fitted t₀ with the IRF σ; the amplitudes B(λ) are solved linearly per wavelength (or trace) |
+| **Separate artifact FWHM** | Gives the artifact its own width (initial value, can be **Fixed**, 1σ reported) |
+| **From Chirp** | Copies the Artifact mode and the median FWHM of the last erf fit in the Chirp window (the FWHM goes to the shared IRF FWHM initial value). Without an erf result it only shows a notice. Opening the window never changes the settings |
+
+- **Results**
+  - GA: the DADS panels show the artifact spectra as grey dashed lines (G′/G″). They are not part of the EADS conversion. The kinetics view shows the artifact component dashed.
+  - Kinetic Fit: the results table gets B′/B″ ± σ rows per trace. The population ratio uses the exponential components only.
+- **Artifact-subtracted data**
+  - **Show artifact-subtracted**: shows the maps/kinetics (or traces) in the window as data − artifact. The main data is not changed.
+  - **Art.-sub** (GA): saves `GA_artifact_subtracted.csv` and the artifact component `GA_artifact_subtracted_artifact.csv`. In Kinetic Fit, the trace export adds `artifact` and `data_minus_artifact` columns while the artifact is on.
+  - **Art.-sub → Residual store**: saves the artifact-subtracted data to `residuals/` (artifact mode in Meta).
+  - **Apply to main data** (GA only): subtracts the artifact from the main data. The 2D map title shows `artifact-sub` and the status shows `[artifact-sub]`; the GA results are reset, so run the fit again. **Revert artifact** undoes it. Any later crop, resampling, t₀ shift, chirp, BG, solvent, new data or Revert clears it automatically with a one-time status notice.
+- **Export**: with the artifact on, **Export DADS** also writes `DADS_artifact_spectra.csv`, and the opju gets a `DADS_artifact` sheet and graph (section 5.9). With it off, every export and the opju are unchanged.
+- **Cautions**
+  - On data without an artifact, turning it on can bias τ and t₀. Use G′+G″ for samples and G+G′+G″ only for solvent-only data.
+  - With stretched components and IRF mode `skip`, the t₀ region is excluded from the fit, so the artifact is ignored (warning shown; Kinetic Fit offers to switch to numerical). It is also ignored, with a notice, when the fit window has too few delays within t₀ ± 2σ (check the t₀ initial value and the window).
+  - Before chirp correction t₀ differs per wavelength, so one t₀ cannot fit the artifact; apply chirp correction first.
 
 ## 6. Input file formats
 
@@ -329,6 +356,12 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.12.0** (2026-11-20)
+- Global Analysis / Kinetic Fit: **Artifact** option (Off / G′+G″ / G+G′+G″), **Separate artifact FWHM**, **From Chirp** (section 5.11)
+- GA DADS shows the artifact spectra dashed; the Kinetic Fit table shows B′/B″ ± σ (excluded from the population ratio)
+- Artifact-subtracted data: in-window toggle, CSV export, Residual store, GA **Apply to main data** / **Revert artifact** (cleared automatically when the data changes)
+- Optional opju sheet `DADS_artifact` (`add_function/ta_opju_builder.py` now differs from the upstream TA_data_processing copy)
 
 **v1.11.0** (2026-11-20)
 - Chirp t₀ Helper erf fit: **Artifact** combo selects coherent-artifact terms — Off (default) / G′+G″ (sample) / G+G′+G″ (solvent). They share the IRF σ and t₀; amplitudes are solved linearly. The status text shows the model used
