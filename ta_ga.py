@@ -398,13 +398,13 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.canvas_dads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
         self.ax_dads, self.ax_dads_n, self.ax_dads_t = \
             self.canvas_dads.axes_list
-        rL.addWidget(self.canvas_dads, stretch=1)
+        rL.addWidget(self.canvas_dads.with_toolbar(self), stretch=1)
 
         # Row 3: EADS + EADS-normalized + species populations c_S(t)
         self.canvas_eads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
         self.ax_eads, self.ax_eads_n, self.ax_eads_t = \
             self.canvas_eads.axes_list
-        rL.addWidget(self.canvas_eads, stretch=1)
+        rL.addWidget(self.canvas_eads.with_toolbar(self), stretch=1)
 
         # Row 4: component visibility checkboxes (built after fit)
         self._cb_host = QtWidgets.QWidget()
@@ -434,7 +434,11 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
 
         self.canvas_kin_fit = MplCanvas(self, figsize=(14, 3))
         self.ax_kin_fit = self.canvas_kin_fit.ax
-        rL.addWidget(self.canvas_kin_fit, stretch=2)
+        rL.addWidget(self.canvas_kin_fit.with_toolbar(self), stretch=2)
+        # Compact toolbars on the line-plot rows keep the plots tall
+        for cv in (self.canvas_dads, self.canvas_eads,
+                   self.canvas_kin_fit):
+            cv.toolbar.setIconSize(QtCore.QSize(16, 16))
 
         outer.addWidget(right, stretch=1)
 
@@ -1340,6 +1344,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             ax.clear()
         for cv in (self.canvas_maps, self.canvas_dads, self.canvas_eads,
                    self.canvas_kin_fit):
+            cv.reset_nav()
             cv.draw_idle()
         self._map_vlines = [None, None, None]
         self._set_export_enabled(False)
@@ -1988,6 +1993,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                         label=(rf'τ_{ii+1}' if ii < n_main else r'τ = ∞'))
         self._style_time_axis(ax, t, 'DADS kinetics  C(t) ⊗ IRF',
                               'Amplitude')
+        self.canvas_dads.reset_nav()
         self.canvas_dads.draw_idle()
 
     def plot_eads(self):
@@ -2000,6 +2006,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                                    fontsize=10)
             self.ax_eads_n.set_title('EADS (peak-normalized)')
             self.ax_eads_t.set_title('Populations (sequential)')
+            self.canvas_eads.reset_nav()
             self.canvas_eads.draw_idle()
             return
 
@@ -2072,6 +2079,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
                     label=rf'S_{iS+1}')
         self._style_time_axis(ax, t, 'EADS populations  c(t)',
                               'Population')
+        self.canvas_eads.reset_nav()
         self.canvas_eads.draw_idle()
 
     def _time_profiles(self):
@@ -2188,10 +2196,13 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
             ln = ax.axvline(self.cur_kin_wl, color='w', linestyle='--',
                             linewidth=1.2)
             self._map_vlines.append(ln)
+        self.canvas_maps.reset_nav()
         self.canvas_maps.draw_idle()
 
     def on_map_click(self, event):
         if event.inaxes not in (self.ax_exp, self.ax_fit_map, self.ax_res):
+            return
+        if self.canvas_maps.toolbar.mode:      # zoom / pan drag, not a pick
             return
         if event.xdata is None:
             return
@@ -2260,6 +2271,7 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         else:
             ax.set_xscale('linear')
             ax.set_xlim(app.delay.min(), app.delay.max())
+        self.canvas_kin_fit.reset_nav()
         self.canvas_kin_fit.draw_idle()
 
     # ---------- Exports ----------

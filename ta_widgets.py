@@ -57,6 +57,13 @@ class MplCanvas(FigureCanvas):
         lay.addWidget(self)
         return w
 
+    def reset_nav(self):
+        """Forget the toolbar's zoom/pan history after a full re-plot, so
+        Home returns to the new data's limits instead of stale ones."""
+        tb = getattr(self, 'toolbar', None)
+        if tb is not None:
+            tb.update()
+
 
 # =====================================================================
 # Small Qt helpers
