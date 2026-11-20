@@ -118,7 +118,7 @@ graph TD
 | 작업 데이터 | `wavelength`, `delay`, `deltaA_raw` | crop이나 보간이 반영된 "raw". 보정 전 값 |
 | 표시/분석 데이터 | `deltaA` | `recompute()`가 만든 보정된 행렬. **모든 분석 다이얼로그의 입력** |
 | Background | `bg_applied`, `bg_spectrum (M,)`, `bg_n` | 앞쪽 N개 delay(pre-trigger)의 평균 스펙트럼 |
-| Chirp | `chirp_applied`, `chirp_pts (K×2)`, `chirp_params [a,b,c,d]`, `chirp_fit_rms`, `ridge_*`, `t0_helper` ('ridge'/'erf'), `erf_r2_min`, `erf_stride` | t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d |
+| Chirp | `chirp_applied`, `chirp_pts (K×2)`, `chirp_params [a,b,c,d]`, `chirp_fit_rms`, `ridge_*`, `t0_helper` ('ridge'/'erf'), `erf_r2_min`, `erf_stride`, `erf_artifact` ('off'/'xpm'/'full') | t₀(λ) = a·√((bλ²−1)/(cλ²−1)) + d |
 | Solvent IRF | `sub_irf_applied`, `sub_irf_scale`, `sub_irf_solv_{wl,t,data}`, `sub_irf_aligned` | 용매 원본(자기 grid 기준)과 샘플 grid에 정렬한 캐시 |
 | Mask | `masked_regions: [(wl1, wl2, 'nan'|'zero')]` | |
 | Zero-time | `tZeroShift` | 누적된 delay 축 이동량 |

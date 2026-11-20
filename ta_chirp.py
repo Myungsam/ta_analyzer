@@ -17,6 +17,10 @@ import ta_opju_export
 class ChirpDialog(QtWidgets.QDialog):
     """Chirp correction with click-to-add points and ridge helper."""
 
+    ARTIFACT_ITEMS = (('off', 'Off'),
+                      ('xpm', 'G′+G″ (sample)'),
+                      ('full', 'G+G′+G″ (solvent)'))
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -84,8 +88,8 @@ class ChirpDialog(QtWidgets.QDialog):
         # t0 helper.  Row 0 = settings shared by both methods (search
         # window, λ-smooth, Recompute), set apart by a line from the
         # method rows below, which have their option buttons on the left:
-        # row 2 = ridge (argmax), row 3 = per-λ erf (IRF⊗exp) fit.
-        # Row 5 = overlay / Auto-place.
+        # row 2 = ridge (argmax), rows 3-4 = per-λ erf (IRF⊗exp) fit and
+        # its coherent-artifact option.  Row 6 = overlay / Auto-place.
         ridge_box = QtWidgets.QGroupBox('t₀ Helper (reference t₀ curve)')
         r_lay = QtWidgets.QGridLayout(ridge_box)
 
@@ -149,14 +153,31 @@ class ChirpDialog(QtWidgets.QDialog):
         self.lbl_erf.setStyleSheet('color: #555;')
         r_lay.addWidget(self.lbl_erf, 3, 5, 1, 5)
 
-        r_lay.addWidget(hline(), 4, 0, 1, 10)
+        r_lay.addWidget(make_label('Artifact:', 'right'), 4, 1)
+        self.dd_artifact = QtWidgets.QComboBox()
+        for key, text in self.ARTIFACT_ITEMS:
+            self.dd_artifact.addItem(text, key)
+        app.erf_artifact = ta_core._artifact_mode(app.erf_artifact)
+        self.dd_artifact.setCurrentIndex(max(0, self.dd_artifact.findData(
+            app.erf_artifact)))
+        self.dd_artifact.setToolTip(
+            'Coherent-artifact terms added to the erf fit, centred at t₀ '
+            'with the IRF width (amplitudes solved linearly).\n'
+            'Off: no artifact. Use this when there is none: the artifact '
+            'terms then only add bias (~10 → ~35 fs on synthetic data).\n'
+            'G′+G″ (sample): XPM-like oscillation around t₀. G is left '
+            'out because it mimics a small t₀ shift of the erf step.\n'
+            'G+G′+G″ (solvent): solvent-only data with no step signal.')
+        r_lay.addWidget(self.dd_artifact, 4, 2, 1, 2)
+
+        r_lay.addWidget(hline(), 5, 0, 1, 10)
         self.cb_show_ridge = QtWidgets.QCheckBox('Show t₀ overlay')
-        r_lay.addWidget(self.cb_show_ridge, 5, 0)
-        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 5, 1)
+        r_lay.addWidget(self.cb_show_ridge, 6, 0)
+        r_lay.addWidget(make_label('Auto-suggest N points:', 'right'), 6, 1)
         self.ed_auto_n = make_int_edit(8, minv=4, maxv=100)
-        r_lay.addWidget(self.ed_auto_n, 5, 2)
+        r_lay.addWidget(self.ed_auto_n, 6, 2)
         self.btn_auto = QtWidgets.QPushButton('Auto-place')
-        r_lay.addWidget(self.btn_auto, 5, 3)
+        r_lay.addWidget(self.btn_auto, 6, 3)
         outer.addWidget(ridge_box)
         self._erf_cache = None       # (key, fit_erf_rows result)
         # erf refits take seconds: debounce window/stride edits.
@@ -213,6 +234,9 @@ class ChirpDialog(QtWidgets.QDialog):
             lambda v: self.set_and_recompute('r2min', v))
         self.ed_stride.valueChanged.connect(
             lambda v: self.set_and_recompute('stride', int(v)))
+        self.dd_artifact.currentIndexChanged.connect(
+            lambda i: self.set_and_recompute(
+                'artifact', self.dd_artifact.itemData(i)))
         self.btn_rec_ridge.clicked.connect(self.recompute_ridge)
         self.btn_auto.clicked.connect(
             lambda: self.auto_place(int(self.ed_auto_n.value())))
@@ -501,13 +525,16 @@ class ChirpDialog(QtWidgets.QDialog):
             app.erf_r2_min = float(val)
         elif field == 'stride':
             app.erf_stride = int(val)
+        elif field == 'artifact':
+            app.erf_artifact = val
         # A change of helper/parameters makes the old curve stale.
         app.ridge_wl = None
         app.ridge_t = None
         self.lbl_erf.setText('')
         if self.cb_show_ridge.isChecked():
             slow = (app.t0_helper == 'erf'
-                    and field in ('tmin', 'tmax', 'stride', 'helper'))
+                    and field in ('tmin', 'tmax', 'stride', 'helper',
+                                  'artifact'))
             if slow:
                 self._refit_timer.start()
             else:
@@ -520,8 +547,13 @@ class ChirpDialog(QtWidgets.QDialog):
         self.dd_method.setEnabled(not erf)
         if not erf:
             self.lbl_erf.setText('')
-        for w in (self.ed_r2min, self.ed_stride, self.lbl_erf):
+        for w in (self.ed_r2min, self.ed_stride, self.lbl_erf,
+                  self.dd_artifact):
             w.setEnabled(erf)
+
+    def _artifact_text(self):
+        mode = ta_core._artifact_mode(self.app.erf_artifact)
+        return dict(self.ARTIFACT_ITEMS)[mode].split(' (')[0]             if mode != 'off' else 'no artifact'
 
     def _helper_name(self):
         return 'erf' if self.app.t0_helper == 'erf' else 'ridge'
@@ -531,9 +563,10 @@ class ChirpDialog(QtWidgets.QDialog):
         app = self.app
         # Content-based key: a t0 shift, BG change or same-shape reload
         # must refit, not reuse old fits.
+        app.erf_artifact = ta_core._artifact_mode(app.erf_artifact)
         key = (float(app.ridge_tmin), float(app.ridge_tmax),
                ta_core.erf_stride(app.wavelength.size, app.erf_stride),
-               base.shape, hash(np.ascontiguousarray(base).tobytes()),
+               app.erf_artifact, base.shape, hash(np.ascontiguousarray(base).tobytes()),
                hash(np.asarray(app.delay, float).tobytes()),
                hash(np.asarray(app.wavelength, float).tobytes()))
         if self._erf_cache is None or self._erf_cache[0] != key:
@@ -541,7 +574,8 @@ class ChirpDialog(QtWidgets.QDialog):
             try:
                 fits = ta_core.fit_erf_rows(
                     app.wavelength, app.delay, base,
-                    app.ridge_tmin, app.ridge_tmax, app.erf_stride)
+                    app.ridge_tmin, app.ridge_tmax, app.erf_stride,
+                    app.erf_artifact)
             finally:
                 QtWidgets.QApplication.restoreOverrideCursor()
             self._erf_cache = (key, fits)
@@ -583,7 +617,8 @@ class ChirpDialog(QtWidgets.QDialog):
                 fw = (np.nanmedian(res['fwhm_all'][res['ok']])
                       if n_ok else float('nan'))
                 self.lbl_erf.setText(
-                    f'{n_ok}/{n} λ accepted, median FWHM = {fw:.3g} '
+                    f'{n_ok}/{n} λ accepted ({self._artifact_text()}), '
+                    f'median FWHM = {fw:.3g} '
                     f'{app.t_unit_ax()}')
         else:
             wl_r, t_r = ta_core.compute_ridge(

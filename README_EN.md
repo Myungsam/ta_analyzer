@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.10.0** (latest) | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Remove selected points from the Chirp points table (Remove Selected / Delete key); point editing buttons moved below the table |
+| **v1.11.0** (latest) | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | Optional coherent-artifact terms in the erf fit (Off / G′+G″ / G+G′+G″) |
+| v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Remove selected points from the Chirp points table (Remove Selected / Delete key); point editing buttons moved below the table |
 | v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper: settings shared by both methods (Search t, λ-smooth) moved to their own row |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Per-wavelength erf fit (IRF⊗exp) option in the Chirp t₀ helper (alongside Ridge) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | Save exported data as an Origin project (.opju) (Export OPJU…, opju dataset info) |
@@ -38,7 +39,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.10.0     # latest (same as main)
+git checkout v1.11.0     # latest (same as main)
+git checkout v1.10.0     # before the artifact option
 git checkout v1.9.1      # before selected-point removal
 git checkout v1.9.0      # before the t₀ Helper layout cleanup
 git checkout v1.8.0      # before the erf t₀ helper
@@ -266,14 +268,19 @@ Search t, λ-smooth and Recompute on the top **Common (both methods)** row apply
 | Method | Computation | Settings |
 |---|---|---|
 | **Ridge (argmax)** | Per wavelength, the delay of maximum \|dA/dt\| (or \|ΔA\|) in the search window; moving average along λ | Method, Search t, λ-smooth |
-| **erf fit (IRF⊗exp)** | Per wavelength, fit `A·(exp decay ⊗ Gaussian IRF)(t; t₀, FWHM, τ) + offset` in the search window and take t₀; median filter along λ | Search t and λ-smooth (shared), **R² min**, **λ stride** |
+| **erf fit (IRF⊗exp)** | Per wavelength, fit `A·(exp decay ⊗ Gaussian IRF)(t; t₀, FWHM, τ) + offset` in the search window and take t₀; median filter along λ | Search t and λ-smooth (shared), **R² min**, **λ stride**, **Artifact** |
 
 - The erf fit resolves t₀ finer than the delay grid and is less sensitive to noise and amplitude. On synthetic data its t₀ error is ~10 fs (argmax: hundreds of fs on noisy wavelengths).
 - Wavelengths with R² below **R² min** (default 0.9), or with t₀ stuck at a window edge, are dropped. Weak wavelengths (e.g. where the signal changes sign) leave gaps in the curve.
 - **λ stride**: fit every N-th wavelength (0 = auto, about 200 wavelengths). Fitting can take a few seconds, so changes to Search t or stride recompute after a short pause. Changing only R² min or λ-smooth re-filters without refitting.
 - The status text shows the number of accepted wavelengths and the median FWHM (an IRF width estimate).
 - *Auto-place* picks N points from the selected curve and skips targets with no accepted wavelength nearby. If fewer than 4 remain, the existing points are kept and a warning is shown.
-- A strong coherent artifact (oscillation near t₀) can still bias the erf fit by tens of fs; check the points and correct them by hand if needed.
+- A strong coherent artifact (oscillation near t₀) can still bias the erf fit by tens of fs; check the points and correct them by hand, or use the **Artifact** option below.
+- **Artifact** (v1.11.0, erf fit only): adds Gaussian terms with the IRF width (σ), centred at t₀, to fit the coherent artifact together with the step. Their amplitudes are solved linearly, so no iterative parameters are added.
+  - **Off** (default): no extra terms. Use when there is no or only a weak artifact.
+  - **G′+G″ (sample)**: σG′ + σ²G″ (XPM-like oscillation). For samples with a clear artifact near t₀. On synthetic data the t₀ error drops from 36 to 11 fs.
+  - **G+G′+G″ (solvent)**: also includes G. For solvent-only data (no step signal). G is nearly indistinguishable from a t₀ shift of the step, so it is not recommended for sample data.
+  - Turning it on for data without an artifact makes the error larger (synthetic data: 8 → about 35 fs). Each mode also needs more delays per wavelength (8 / 12 / 14).
 
 ## 6. Input file formats
 
@@ -322,6 +329,9 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.11.0** (2026-11-20)
+- Chirp t₀ Helper erf fit: **Artifact** combo selects coherent-artifact terms — Off (default) / G′+G″ (sample) / G+G′+G″ (solvent). They share the IRF σ and t₀; amplitudes are solved linearly. The status text shows the model used
 
 **v1.10.0** (2026-11-19)
 - Chirp Correction: select rows in the points table and remove specific points with **Remove Selected** or the Delete key (several rows at once; selected points circled in red on the map)

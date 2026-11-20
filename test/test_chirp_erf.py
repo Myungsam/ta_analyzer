@@ -109,12 +109,14 @@ def test_dialog():
     assert pos(dlg.rb_ridge) == (2, 0)
     assert pos(dlg.rb_erf) == (3, 0)
     assert pos(dlg.dd_method)[0] == 2 and pos(dlg.ed_r2min)[0] == 3
-    assert pos(dlg.btn_auto)[0] == 5
+    assert pos(dlg.dd_artifact) == (4, 2)
+    assert pos(dlg.btn_auto)[0] == 6
     assert dlg.rb_ridge.isChecked() and not dlg.ed_r2min.isEnabled()
 
     dlg.rb_erf.setChecked(True)
     assert win.t0_helper == 'erf'
     assert dlg.ed_r2min.isEnabled() and not dlg.dd_method.isEnabled()
+    assert dlg.dd_artifact.isEnabled()
     dlg.auto_place(8)
     pts = win.chirp_pts
     assert pts.shape[0] >= 6, pts.shape
@@ -161,7 +163,19 @@ def test_dialog():
     assert dlg._base_data.shape == (win.wavelength.size, win.delay.size)
     assert win.ridge_wl.min() >= 450.0 - 1e-9
 
+    # Artifact option: changes app state and forces a (debounced) refit
+    assert dlg.dd_artifact.currentData() == 'off'
+    cache = dlg._erf_cache
+    dlg.dd_artifact.setCurrentIndex(dlg.dd_artifact.findData('xpm'))
+    assert win.erf_artifact == 'xpm' and dlg._refit_timer.isActive()
+    dlg._refit_timer.timeout.emit()
+    assert dlg._erf_cache is not cache
+    assert dlg._erf_cache[1]['artifact'] == 'xpm'
+    dlg.dd_artifact.setCurrentIndex(dlg.dd_artifact.findData('off'))
+    dlg._refit_timer.timeout.emit()
+
     dlg.rb_ridge.setChecked(True)
+    assert not dlg.dd_artifact.isEnabled()
     assert win.t0_helper == 'ridge' and dlg.lbl_erf.text() == ''
     dlg.auto_place(8)
     assert win.chirp_pts.shape[0] == 8      # ridge: every target placed
@@ -175,8 +189,68 @@ def test_dialog():
           f'max err {np.abs(err).max() * 1e3:.1f} fs')
 
 
+def _with_artifact(coef, seed=4):
+    wl, t, D, t0 = _synthetic(n_wl=120, seed=seed)
+    for i in range(wl.size):
+        D[i] += ta_core.artifact_basis(t, t0[i], 0.12, 'full') @ coef
+    return wl, t, D, t0
+
+
+def _rms(res, wl, t0):
+    e = res['t0'] - np.interp(res['wl'], wl, t0)
+    return float(np.sqrt(np.mean(e ** 2)))
+
+
+def test_artifact_modes():
+    t = np.linspace(-1, 1, 50)
+    assert ta_core.artifact_basis(t, 0, 0.2, 'full').shape == (50, 3)
+    assert ta_core.artifact_basis(t, 0, 0.2, 'xpm').shape == (50, 2)
+    assert ta_core.artifact_basis(t, 0, 0.2, 'off').shape == (50, 0)
+    assert ta_core._artifact_mode(True) == 'full'
+    assert ta_core._artifact_mode(None) == 'off'
+    assert ta_core._artifact_mode('XPM') == 'xpm'
+    assert ta_core.erf_min_points('off') == ta_core.ERF_MIN_POINTS
+    assert ta_core.erf_min_points('full') == ta_core.ERF_MIN_POINTS + 6
+    # Short window: pure-noise rows must not pass via the artifact columns
+    rng = np.random.default_rng(7)
+    tn = np.linspace(-0.4, 0.4, 15)     # just above the full-mode minimum
+    N = rng.normal(0, 1.0, (100, tn.size))
+    for mode in ('off', 'xpm', 'full'):
+        r = ta_core.compute_erf_t0(np.arange(100.0), tn, N, -0.5, 0.5, 1,
+                                   1, 0.9, mode)
+        assert r is not None and r['ok'].sum() <= 5, (mode, r['ok'].sum())
+    try:
+        ta_core.artifact_basis(t, 0, 0.2, 'bogus')
+        raise AssertionError('bad mode accepted')
+    except ValueError:
+        pass
+    # XPM-like artifact on a sample: 'xpm' clearly beats 'off'
+    wl, t, D, t0 = _with_artifact(np.array([0.0, 0.25, -0.1]))
+    off = ta_core.compute_erf_t0(wl, t, D, -0.8, 1.5, 5, 0, 0.9, 'off')
+    xpm = ta_core.compute_erf_t0(wl, t, D, -0.8, 1.5, 5, 0, 0.9, 'xpm')
+    assert xpm['artifact'] == 'xpm'
+    assert xpm['ok'].sum() >= off['ok'].sum()
+    rms_xpm, rms_off = _rms(xpm, wl, t0), _rms(off, wl, t0)
+    assert rms_xpm < 0.6 * rms_off, (rms_xpm, rms_off)
+    assert rms_xpm < 0.025
+    # Solvent-only (artifact, no step): only 'full' recovers t0
+    rng = np.random.default_rng(5)
+    S = np.array([ta_core.artifact_basis(t, t0[i], 0.12, 'full')
+                  @ np.array([0.1, 0.3, -0.15]) for i in range(wl.size)])
+    S += rng.normal(0, 0.01, S.shape)
+    full = ta_core.compute_erf_t0(wl, t, S, -0.8, 1.5, 5, 0, 0.9, 'full')
+    off = ta_core.compute_erf_t0(wl, t, S, -0.8, 1.5, 5, 0, 0.9, 'off')
+    assert full['ok'].sum() > 0.9 * full['ok'].size
+    assert off['ok'].sum() < 0.1 * off['ok'].size
+    err = np.abs(full['t0'] - np.interp(full['wl'], wl, t0)).max()
+    assert err < 0.04, err
+    print(f'[4] artifact: xpm rms {rms_xpm * 1e3:.1f} fs vs off '
+          f'{rms_off * 1e3:.1f} fs; solvent full max {err * 1e3:.1f} fs')
+
+
 if __name__ == '__main__':
     test_core_accuracy()
     test_rejection_and_refilter()
+    test_artifact_modes()
     test_dialog()
     print('\nAll chirp erf tests passed.')

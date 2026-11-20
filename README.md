@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.10.0** (최신) | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Chirp points 표에서 고른 점 삭제(Remove Selected / Delete 키), 점 편집 버튼을 표 아래로 이동 |
+| **v1.11.0** (최신) | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | erf fit에 coherent artifact 항 선택 옵션 (Off / G′+G″ / G+G′+G″) |
+| v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Chirp points 표에서 고른 점 삭제(Remove Selected / Delete 키), 점 편집 버튼을 표 아래로 이동 |
 | v1.9.1 | [`v1.9.1`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.1) | Chirp t₀ Helper에서 두 방식 공통 설정(Search t, λ-smooth)을 별도 줄로 분리 |
 | v1.9.0 | [`v1.9.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.9.0) | Chirp t₀ 도우미에 파장별 erf fit(IRF⊗exp) 방식 추가 (Ridge와 선택) |
 | v1.8.0 | [`v1.8.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.8.0) | 반출 데이터를 Origin 프로젝트(.opju)로 저장 (Export OPJU…, opju dataset info) |
@@ -38,7 +39,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.10.0     # 최신 버전 (main과 같음)
+git checkout v1.11.0     # 최신 버전 (main과 같음)
+git checkout v1.10.0     # artifact 옵션 이전
 git checkout v1.9.1      # 점 선택 삭제 이전
 git checkout v1.9.0      # t₀ Helper 배치 정리 이전
 git checkout v1.8.0      # erf t₀ 도우미 이전
@@ -266,14 +268,19 @@ Chirp Correction 창 아래의 **t₀ Helper**에서 *Auto-place*와 overlay가 
 | 방식 | 계산 | 설정 |
 |---|---|---|
 | **Ridge (argmax)** | 파장마다 탐색 구간에서 \|dA/dt\|(또는 \|ΔA\|)가 가장 큰 delay. λ 방향 이동평균 | Method, Search t, λ-smooth |
-| **erf fit (IRF⊗exp)** | 파장마다 `A·(exp 감쇠 ⊗ 가우시안 IRF)(t; t₀, FWHM, τ) + offset`을 탐색 구간에서 피팅해 t₀를 얻음. λ 방향 median 필터 | Search t·λ-smooth(공유), **R² min**, **λ stride** |
+| **erf fit (IRF⊗exp)** | 파장마다 `A·(exp 감쇠 ⊗ 가우시안 IRF)(t; t₀, FWHM, τ) + offset`을 탐색 구간에서 피팅해 t₀를 얻음. λ 방향 median 필터 | Search t·λ-smooth(공유), **R² min**, **λ stride**, **Artifact** |
 
 - erf fit은 delay 격자보다 세밀한 t₀를 주고 잡음·진폭 차이에 덜 민감합니다. 합성 데이터 기준 t₀ 오차는 ~10 fs 수준입니다(argmax는 잡음 파장에서 수백 fs).
 - **R² min**(기본 0.9) 미만이거나 t₀가 탐색 구간 끝에 걸린 파장은 제외됩니다. 신호가 약한 파장(부호가 바뀌는 곳 등)은 곡선에 빈 구간으로 남습니다.
 - **λ stride**: 몇 번째 파장마다 피팅할지(0 = 자동, 약 200개 파장). 피팅은 수 초 걸릴 수 있어 Search t·stride를 바꾸면 잠시 뒤 다시 계산합니다. R² min·λ-smooth만 바꾸면 다시 피팅하지 않고 거르기만 합니다.
 - 상태 표시줄에 채택된 파장 수와 FWHM 중앙값(IRF 폭 추정)이 나옵니다.
 - *Auto-place*는 선택한 방식의 곡선에서 N개 점을 고르며, 근처에 채택된 파장이 없는 위치는 건너뜁니다. 4개 미만이면 기존 점을 바꾸지 않고 알립니다.
-- coherent artifact(t₀ 부근 진동)가 강하면 erf fit도 수십 fs 치우칠 수 있으니 점을 확인하고 필요하면 직접 고치세요.
+- coherent artifact(t₀ 부근 진동)가 강하면 erf fit도 수십 fs 치우칠 수 있으니 점을 확인하고 필요하면 직접 고치거나 아래 **Artifact** 옵션을 쓰세요.
+- **Artifact** (v1.11.0, erf fit 전용): 모델에 IRF와 같은 폭(σ)·중심 t₀의 가우시안 항을 더해 coherent artifact를 함께 맞춥니다. 진폭은 선형으로 풀려 반복 파라미터는 늘지 않습니다.
+  - **Off** (기본): 추가 항 없음. artifact가 없거나 약할 때.
+  - **G′+G″ (sample)**: σG′ + σ²G″ (XPM 진동형). 샘플에서 t₀ 부근 artifact가 뚜렷할 때. 합성 데이터에서 t₀ 오차 36 → 11 fs.
+  - **G+G′+G″ (solvent)**: G 항까지 포함. 용매만 측정한 데이터(계단 신호 없음)용. G는 계단의 t₀ 이동과 거의 구분되지 않아 샘플 데이터에는 권하지 않습니다.
+  - artifact가 없는 데이터에서 켜면 오히려 오차가 커집니다(합성 데이터 8 → 약 35 fs). 항이 늘어난 만큼 파장당 필요한 최소 delay 수도 늘어납니다(8 / 12 / 14).
 
 ## 6. 입력 파일 형식
 
@@ -322,6 +329,9 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.11.0** (2026-11-20)
+- Chirp t₀ Helper erf fit: **Artifact** 콤보로 coherent artifact 항 선택 — Off(기본) / G′+G″ (sample) / G+G′+G″ (solvent). IRF σ와 t₀를 공유하고 진폭은 선형으로 풂. 상태 표시줄에 사용한 모델 표시
 
 **v1.10.0** (2026-11-19)
 - Chirp Correction: 점 목록 표에서 행을 골라 **Remove Selected** 또는 Delete 키로 특정 점 삭제 (여러 행 선택 가능, 고른 점은 맵에 빨간 원 표시)

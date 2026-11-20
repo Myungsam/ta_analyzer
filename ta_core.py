@@ -1145,14 +1145,59 @@ def erf_stride(n_wl: int, stride: int = 0) -> int:
     return max(1, int(np.ceil(n_wl / ERF_AUTO_POINTS)))
 
 
+# Coherent-artifact term sets for the erf t0 fit (columns of
+# artifact_basis).  'xpm' omits G: a free G term is nearly identical to a
+# small t0 shift of the erf step (erf(t−t0−δ) ≈ erf(t−t0) − δ·G), so with
+# a step present it trades off against t0.  'full' suits solvent-only
+# data, where there is no step to confuse it with.
+ARTIFACT_MODES = {'off': (), 'xpm': (1, 2), 'full': (0, 1, 2)}
+
+
+def _artifact_mode(artifact) -> str:
+    """Normalise an artifact mode ('off'/'xpm'/'full'; bool: True='full')."""
+    if artifact is True:
+        return 'full'
+    if not artifact:
+        return 'off'
+    mode = str(artifact).lower()
+    if mode not in ARTIFACT_MODES:
+        raise ValueError(f'unknown artifact mode {artifact!r}')
+    return mode
+
+
+def erf_min_points(artifact='off') -> int:
+    """Minimum finite delays per row: ERF_MIN_POINTS for the 5-parameter
+    model, plus 2 per artifact term so the extra linear columns cannot fit
+    noise on short windows."""
+    return ERF_MIN_POINTS + 2 * len(ARTIFACT_MODES[_artifact_mode(artifact)])
+
+
+def artifact_basis(t: np.ndarray, t0: float, fwhm: float,
+                   mode: str) -> np.ndarray:
+    """Coherent-artifact basis at t0 with the IRF width.
+
+    Columns are taken from (G, σ·G′, σ²·G″) of a unit-peak Gaussian G
+    (dimensionless, so the linear coefficients are comparable) according
+    to ``ARTIFACT_MODES[mode]``.  Shape (len(t), n_terms).
+    """
+    sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    x = (np.asarray(t, float) - t0) / sigma
+    g = np.exp(-0.5 * x ** 2)
+    full = np.column_stack([g, -x * g, (x ** 2 - 1.0) * g])
+    return full[:, list(ARTIFACT_MODES[_artifact_mode(mode)])]
+
+
 def _fit_erf_trace(t: np.ndarray, y: np.ndarray, t_min: float,
-                   t_max: float):
+                   t_max: float, artifact='off'):
     """Fit y ≈ A·(exp ⊗ Gaussian IRF)(t; t0, fwhm, tau) + c on one trace.
 
-    A and c are solved linearly for each (t0, fwhm, tau) trial (variable
-    projection); the three non-linear parameters are bounded:
-    t0 ∈ [t_min, t_max], fwhm ∈ [dt_min, span], log tau up to 1e3·span
-    (≈ a pure erf step).  Returns (t0, fwhm, tau, A, c, r2) or None.
+    ``artifact`` ('off' | 'xpm' | 'full', see ``ARTIFACT_MODES``) adds
+    coherent-artifact terms B·{G, σG′, σ²G″} centred at t0 with the IRF
+    width, see :func:`artifact_basis`.  All amplitudes (A, c, B0..B2) are solved
+    linearly for each (t0, fwhm, tau) trial (variable projection), so the
+    artifact adds no non-linear parameter.  Bounds: t0 ∈ [t_min, t_max],
+    fwhm ∈ [dt_min, span], log tau up to 1e3·span (≈ a pure erf step).
+    Returns (t0, fwhm, tau, A, c, r2) or None.
     """
     from scipy.optimize import least_squares
     span = float(t_max - t_min)
@@ -1161,10 +1206,14 @@ def _fit_erf_trace(t: np.ndarray, y: np.ndarray, t_min: float,
     fw_lo, fw_hi = max(dt_min * 0.5, span * 1e-3), span
     tau_lo, tau_hi = fw_lo * 0.5, span * 1e3
     ones = np.ones_like(t)
+    artifact = _artifact_mode(artifact)
 
     def lin(p):
         c = exp_irf_conv(t, np.exp(p[2]), p[0], np.exp(p[1]))
         M = np.column_stack([c, ones])
+        if artifact != 'off':
+            M = np.column_stack(
+                [M, artifact_basis(t, p[0], np.exp(p[1]), artifact)])
         coef, *_ = np.linalg.lstsq(M, y, rcond=None)
         return M @ coef - y, coef
 
@@ -1203,7 +1252,7 @@ def _fit_erf_trace(t: np.ndarray, y: np.ndarray, t_min: float,
 
 def compute_erf_t0(wavelength, delay, data, t_min: float = -0.5,
                    t_max: float = 1.5, smooth_n: int = 5, stride: int = 0,
-                   r2_min: float = 0.9):
+                   r2_min: float = 0.9, artifact='off'):
     """Per-wavelength t0 from an IRF-convolved exponential (erf) fit.
 
     Each sampled row (every ``stride``-th wavelength; 0 = auto ≈ 200 rows)
@@ -1213,24 +1262,29 @@ def compute_erf_t0(wavelength, delay, data, t_min: float = -0.5,
     Returns the :func:`erf_t0_accept` dict, or None when the window holds
     fewer than ``ERF_MIN_POINTS`` delays.
     """
-    fits = fit_erf_rows(wavelength, delay, data, t_min, t_max, stride)
+    fits = fit_erf_rows(wavelength, delay, data, t_min, t_max, stride,
+                        artifact)
     if fits is None:
         return None
     return erf_t0_accept(fits, r2_min, smooth_n)
 
 
 def fit_erf_rows(wavelength, delay, data, t_min: float, t_max: float,
-                 stride: int = 0):
+                 stride: int = 0, artifact='off'):
     """Raw per-row erf fits (the slow part of :func:`compute_erf_t0`).
 
-    Returns a dict with ``wl_all``, ``t0_all``, ``fwhm_all``, ``r2_all``
-    and the window edges ``t_lo``/``t_hi``, or None for a too-short window.
+    Returns a dict with ``artifact`` (normalised mode), ``wl_all``,
+    ``t0_all``, ``fwhm_all``, ``r2_all`` and the window edges
+    ``t_lo``/``t_hi``, or None for a too-short window (fewer than
+    :func:`erf_min_points` delays).
     """
     wl = np.asarray(wavelength, float).ravel()
     t = np.asarray(delay, float).ravel()
     D = np.asarray(data, float)
     m = (t >= t_min) & (t <= t_max)
-    if np.count_nonzero(m) < ERF_MIN_POINTS:
+    artifact = _artifact_mode(artifact)      # validate once, up front
+    n_min = erf_min_points(artifact)
+    if np.count_nonzero(m) < n_min:
         return None
     t_sub = t[m]
     lo_t, hi_t = float(t_sub[0]), float(t_sub[-1])
@@ -1242,14 +1296,16 @@ def fit_erf_rows(wavelength, delay, data, t_min: float, t_max: float,
     for k, i in enumerate(rows):
         y = D[i, m]
         fin = np.isfinite(y)
-        # 5 model parameters (t0, fwhm, tau, A, c): need clear redundancy.
-        if fin.sum() < ERF_MIN_POINTS or np.ptp(y[fin]) == 0:
+        # 5 model parameters (t0, fwhm, tau, A, c) + artifact terms: need
+        # clear redundancy (see erf_min_points).
+        if fin.sum() < n_min or np.ptp(y[fin]) == 0:
             continue
-        out = _fit_erf_trace(t_sub[fin], y[fin], lo_t, hi_t)
+        out = _fit_erf_trace(t_sub[fin], y[fin], lo_t, hi_t, artifact)
         if out is None:
             continue
         t0_all[k], fw_all[k], r2_all[k] = out[0], out[1], out[5]
-    return {'wl_all': wl[rows], 't0_all': t0_all, 'fwhm_all': fw_all,
+    return {'artifact': _artifact_mode(artifact),
+            'wl_all': wl[rows], 't0_all': t0_all, 'fwhm_all': fw_all,
             'r2_all': r2_all, 't_lo': lo_t, 't_hi': hi_t}
 
 

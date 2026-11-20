@@ -183,6 +183,7 @@ class TAAnalyzer(QtWidgets.QMainWindow):
         self.t0_helper = 'ridge'
         self.erf_r2_min = 0.9
         self.erf_stride = 0          # 0 = auto (~200 wavelengths)
+        self.erf_artifact = 'off'    # 'off' | 'xpm' (G′+G″) | 'full' (G+G′+G″)
 
         # --- Current selection (crosshair position) ---
         self.selWL = 0.0
