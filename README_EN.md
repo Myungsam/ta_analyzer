@@ -18,7 +18,8 @@ Main features:
 
 | Version | Tag | Contents |
 |---|---|---|
-| **v1.13.0** (latest) | [`v1.13.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.13.0) | Zoom / pan toolbars on the Global Analysis DADS, EADS and kinetics plots |
+| **v1.14.0** (latest) | [`v1.14.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.14.0) | Global Analysis DADS / EADS plots split into tabs, shown larger |
+| v1.13.0 | [`v1.13.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.13.0) | Zoom / pan toolbars on the Global Analysis DADS, EADS and kinetics plots |
 | v1.12.0 | [`v1.12.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.12.0) | Optional coherent-artifact terms in Global Analysis and Kinetic Fit, artifact-subtracted outputs, opju DADS_artifact sheet |
 | v1.11.0 | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | Optional coherent-artifact terms in the erf fit (Off / G′+G″ / G+G′+G″) |
 | v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Remove selected points from the Chirp points table (Remove Selected / Delete key); point editing buttons moved below the table |
@@ -41,7 +42,8 @@ Download `TA_Analyzer.exe` for the version you want from the [Releases](https://
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.13.0     # latest (same as main)
+git checkout v1.14.0     # latest (same as main)
+git checkout v1.13.0     # before the DADS / EADS tabs
 git checkout v1.12.0     # before the GA plot toolbars
 git checkout v1.11.0     # before the GA / Kinetic Fit artifact option
 git checkout v1.10.0     # before the artifact option
@@ -223,7 +225,7 @@ The **Global Analysis result pane** now shows:
 
 ### 5.8 DADS / EADS time-domain results (v1.5.0)
 
-The DADS and EADS rows of the Global Analysis results now end with a delay-axis plot.
+The DADS and EADS rows of the Global Analysis results now end with a delay-axis plot. Since v1.14.0 the two rows sit in **DADS / EADS tabs** below the maps, so only the chosen tab's three plots are shown, at twice the height (the last chosen tab is kept when the window is reopened).
 
 | Row | Left → right | Time plot |
 |---|---|---|
@@ -233,7 +235,7 @@ The DADS and EADS rows of the Global Analysis results now end with a delay-axis 
 - Curves use the fitted t₀, FWHM, τ and β on a dense grid over the fit window (denser over the IRF rise) that also contains the measured delays.
 - The x axis follows the **Scale** (Log/Linear) selector of the kinetics plot below, and **Show components** hides curves in the time plots too.
 - The **Export: DADS / EADS** buttons save two files (v1.7.0), always with every component, including hidden ones.
-- The DADS row, the EADS row and the kinetics plot below have the same toolbar as the map row (Home / Back / Forward / Pan / Zoom / Save) for zooming into a region (v1.13.0). A re-plot (hiding components, a new λ, a new fit) clears the zoom history, so Home returns to the new plot's full range.
+- The DADS tab, the EADS tab and the kinetics plot below have the same toolbar as the map row (Home / Back / Forward / Pan / Zoom / Save) for zooming into a region (v1.13.0). A re-plot (hiding components, a new λ, a new fit) clears the zoom history, so Home returns to the new plot's full range.
 
 | Button | Spectra file | Time file |
 |---|---|---|
@@ -359,6 +361,9 @@ For files that match neither, use **Load Data → Custom** and mark the regions 
 - Measurement data (`Data/`), test data folders and build outputs are not part of the repository.
 
 ## 9. Changelog
+
+**v1.14.0** (2026-11-27)
+- Global Analysis: the DADS and EADS rows move into **DADS / EADS tabs** below the maps; only the chosen tab's three plots are shown, at twice the height, and the last tab is remembered (section 5.8)
 
 **v1.13.0** (2026-11-20)
 - Global Analysis: zoom / pan toolbars (Home / Back / Forward / Pan / Zoom / Save) on the DADS row, the EADS row and the kinetics plot (section 5.8)

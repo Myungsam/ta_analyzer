@@ -121,6 +121,45 @@ def test_toolbars():
     print('[ok] GA zoom toolbars')
 
 
+def test_sas_tabs():
+    """DADS and EADS rows live in two tabs; both are plotted after a fit
+    whichever is shown, and the chosen tab is remembered on reopen."""
+    qapp = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)  # noqa: F841
+    wl, t, D = _dataset()
+    win = ta_main.TAAnalyzer()
+    win.set_loaded_data(wl, t, D, 'Loaded: SAS tabs')
+    ga = ta_ga.GlobalAnalysisDialog(win, win)
+    tabs = ga.tabs_sas
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ['DADS', 'EADS']
+    assert tabs.currentIndex() == 0
+    assert tabs.widget(0).isAncestorOf(ga.canvas_dads)
+    assert tabs.widget(1).isAncestorOf(ga.canvas_eads)
+
+    ga.dd_N.setCurrentText('2')
+    ga.tau_table.cellChanged.disconnect()
+    for r, v in enumerate([1.0, 30.0]):
+        ga.tau_table.item(r, 0).setText(str(v))
+    ga.tau_table.cellChanged.connect(ga._on_tau_edit)
+    ga.read_table()
+    ga.do_run()
+    QtWidgets.QApplication.processEvents()
+    # the hidden EADS tab is plotted too
+    assert len(ga.ax_dads.get_lines()) >= 2
+    assert len(ga.ax_eads.get_lines()) >= 2
+    assert len(ga.ax_eads_t.get_lines()) >= 2
+
+    tabs.setCurrentIndex(1)
+    assert tabs.currentWidget().isAncestorOf(ga.canvas_eads)
+    assert win.ga_sas_tab == 1
+    ga.close()
+    ga2 = ta_ga.GlobalAnalysisDialog(win, win)
+    assert ga2.tabs_sas.currentIndex() == 1         # remembered
+    ga2.close()
+    win.close()
+    print('[ok] GA DADS / EADS tabs')
+
+
 if __name__ == '__main__':
     test_toolbars()
+    test_sas_tabs()
     print('ALL OK')

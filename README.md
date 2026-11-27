@@ -18,7 +18,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 
 | 버전 | 태그 | 내용 |
 |---|---|---|
-| **v1.13.0** (최신) | [`v1.13.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.13.0) | Global Analysis DADS·EADS·kinetics 그래프에 확대/축소 툴바 |
+| **v1.14.0** (최신) | [`v1.14.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.14.0) | Global Analysis DADS / EADS 그래프를 탭으로 나눠 크게 표시 |
+| v1.13.0 | [`v1.13.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.13.0) | Global Analysis DADS·EADS·kinetics 그래프에 확대/축소 툴바 |
 | v1.12.0 | [`v1.12.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.12.0) | Global Analysis·Kinetic Fit에 coherent artifact 항 선택 옵션, artifact 뺀 데이터 출력, opju DADS_artifact 시트 |
 | v1.11.0 | [`v1.11.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.11.0) | erf fit에 coherent artifact 항 선택 옵션 (Off / G′+G″ / G+G′+G″) |
 | v1.10.0 | [`v1.10.0`](https://github.com/Myungsam/ta_analyzer/releases/tag/v1.10.0) | Chirp points 표에서 고른 점 삭제(Remove Selected / Delete 키), 점 편집 버튼을 표 아래로 이동 |
@@ -41,7 +42,8 @@ TA Analyzer는 펌프-프로브 transient absorption(TA) 측정 데이터 ΔA(λ
 ```bash
 git clone https://github.com/Myungsam/ta_analyzer.git
 cd ta_analyzer
-git checkout v1.13.0     # 최신 버전 (main과 같음)
+git checkout v1.14.0     # 최신 버전 (main과 같음)
+git checkout v1.13.0     # DADS / EADS 탭 이전
 git checkout v1.12.0     # GA 그래프 툴바 이전
 git checkout v1.11.0     # GA·Kinetic Fit artifact 옵션 이전
 git checkout v1.10.0     # artifact 옵션 이전
@@ -223,7 +225,7 @@ Spectrum과 Kinetics 패널 아랫줄의 **Integrate** 체크박스를 켜면 �
 
 ### 5.8 DADS / EADS 시간 영역 결과 (v1.5.0)
 
-Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) 축 그래프가 추가됩니다.
+Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) 축 그래프가 추가됩니다. v1.14.0부터 두 줄은 맵 아래의 **DADS / EADS 탭**으로 나뉘어, 고른 탭의 그래프 3개만 두 배 높이로 보입니다(마지막으로 고른 탭은 창을 다시 열어도 유지).
 
 | 줄 | 왼쪽 → 오른쪽 | 시간 그래프 내용 |
 |---|---|---|
@@ -233,7 +235,7 @@ Global Analysis 결과 창의 DADS 줄과 EADS 줄 오른쪽에 시간(delay) �
 - 피팅에 쓴 t₀, FWHM, τ, β로 fit 구간 전체를 촘촘히 계산하고(IRF 상승 구간은 더 촘촘히), 실제 측정 delay 점도 포함합니다.
 - x축은 아래 kinetics 그래프의 **Scale**(Log/Linear) 선택을 따르고, **Show components** 체크박스로 성분을 숨기면 시간 그래프에서도 숨겨집니다.
 - **Export: DADS / EADS** 버튼은 파일 두 개를 저장합니다(v1.7.0). 숨긴 성분도 모두 포함됩니다.
-- DADS 줄, EADS 줄, 아래 kinetics 그래프 위에도 맵 줄과 같은 툴바(Home / Back / Forward / Pan / Zoom / 저장)가 있어 영역을 확대·축소할 수 있습니다(v1.13.0). 다시 그리면(성분 숨김, λ 변경, 새 fit) 확대 기록이 지워져 Home은 새 그래프의 전체 범위로 돌아갑니다.
+- DADS 탭, EADS 탭, 아래 kinetics 그래프 위에도 맵 줄과 같은 툴바(Home / Back / Forward / Pan / Zoom / 저장)가 있어 영역을 확대·축소할 수 있습니다(v1.13.0). 다시 그리면(성분 숨김, λ 변경, 새 fit) 확대 기록이 지워져 Home은 새 그래프의 전체 범위로 돌아갑니다.
 
 | 버튼 | 스펙트럼 파일 | 시간 파일 |
 |---|---|---|
@@ -359,6 +361,9 @@ corner, t1, t2, ..., tN
 - 측정 데이터(`Data/`), 테스트 데이터 폴더, 빌드 결과물은 저장소에 포함하지 않습니다.
 
 ## 9. 변경 이력
+
+**v1.14.0** (2026-11-27)
+- Global Analysis: DADS 줄과 EADS 줄을 맵 아래 **DADS / EADS 탭**으로 분리. 고른 탭의 그래프 3개만 두 배 높이로 표시, 마지막 탭 기억 (5.8절)
 
 **v1.13.0** (2026-11-20)
 - Global Analysis: DADS 줄, EADS 줄, kinetics 그래프 위에 확대/축소 툴바(Home / Back / Forward / Pan / Zoom / 저장) (5.8절)

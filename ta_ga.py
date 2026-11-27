@@ -394,17 +394,28 @@ class GlobalAnalysisDialog(QtWidgets.QDialog):
         self.ax_exp, self.ax_fit_map, self.ax_res = self.canvas_maps.axes_list
         rL.addWidget(self.canvas_maps.with_toolbar(self), stretch=2)
 
-        # Row 2: DADS + DADS-normalized + component kinetics C_j(t)
+        # Row 2: DADS / EADS tabs, one row of three plots each, so the
+        # visible row gets the height of both and legends have room.
+        #   DADS: DADS + DADS-normalized + component kinetics C_j(t)
+        #   EADS: EADS + EADS-normalized + species populations c_S(t)
         self.canvas_dads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
         self.ax_dads, self.ax_dads_n, self.ax_dads_t = \
             self.canvas_dads.axes_list
-        rL.addWidget(self.canvas_dads.with_toolbar(self), stretch=1)
-
-        # Row 3: EADS + EADS-normalized + species populations c_S(t)
         self.canvas_eads = MplCanvas(self, nrows=1, ncols=3, figsize=(14, 3))
         self.ax_eads, self.ax_eads_n, self.ax_eads_t = \
             self.canvas_eads.axes_list
-        rL.addWidget(self.canvas_eads.with_toolbar(self), stretch=1)
+        self.tabs_sas = QtWidgets.QTabWidget()
+        self.tabs_sas.addTab(self.canvas_dads.with_toolbar(self), 'DADS')
+        self.tabs_sas.addTab(self.canvas_eads.with_toolbar(self), 'EADS')
+        self.tabs_sas.setTabToolTip(
+            0, 'Decay-associated spectra (parallel model) and C(t)')
+        self.tabs_sas.setTabToolTip(
+            1, 'Evolution-associated spectra (sequential model) and c(t)')
+        self.tabs_sas.setCurrentIndex(
+            int(getattr(app, 'ga_sas_tab', 0)) % 2)
+        self.tabs_sas.currentChanged.connect(
+            lambda i: setattr(self.app, 'ga_sas_tab', int(i)))
+        rL.addWidget(self.tabs_sas, stretch=2)
 
         # Row 4: component visibility checkboxes (built after fit)
         self._cb_host = QtWidgets.QWidget()
